@@ -212,7 +212,7 @@ analysis_plot_theme <- function() {
     ggplot2::theme(
       plot.title = ggplot2::element_text(face = "bold"),
       plot.subtitle = ggplot2::element_text(size = 11),
-      axis.text.x = ggplot2::element_text(angle = 0, hjust = 1),
+      axis.text.x = ggplot2::element_text(angle = 0, hjust = 0),
       panel.grid.minor = ggplot2::element_blank()
     )
 }
@@ -3832,7 +3832,7 @@ time_series_plot_linear <- ggplot2::ggplot(
     ggplot2::aes(x = time_bin, y = zero_detection_point),
     inherit.aes = FALSE,
     colour = "black",
-    size = 1.2
+    size = 0.9
   ) +
   ggplot2::labs(
     title = "BirdNET identifications over time",
@@ -4071,7 +4071,7 @@ time_series_by_recorder_plot_linear <- ggplot2::ggplot(
     ggplot2::aes(x = time_bin, y = zero_detection_point),
     inherit.aes = FALSE,
     colour = "black",
-    size = 1.1
+    size = 0.9
   ) +
   ggplot2::facet_grid(recorder_id ~ ., scales = "free_y") +
   ggplot2::labs(
@@ -4699,7 +4699,7 @@ for (recorder_id in recorder_ids) {
       ggplot2::aes(x = time_bin, y = zero_detection_point),
       inherit.aes = FALSE,
       colour = "black",
-      size = 1.1
+      size = 0.9
     ) +
     ggplot2::labs(
       title = sprintf("BirdNET identifications over time: %s", recorder_id),
