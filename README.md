@@ -400,8 +400,8 @@ The analysis workflow writes:
 - `birdnet_monthly_diversity_metrics_daily_incidence_overall.csv`  
   diversity metrics after combining daily species incidence across all currently analysed recorders within each user-defined diversity window
 
-- `birdnet_raw_species_richness_by_month.csv`  
-  raw calendar-month species richness calculated as the number of unique species detected in each month
+- `birdnet_raw_species_richness_by_diversity_window.csv`  
+  raw species richness calculated as the number of unique species detected within each user-defined diversity window
 
 - `birdnet_identification_acf.csv`  
   detection-count autocorrelation values by temporal lag, retained for backward compatibility
@@ -440,7 +440,7 @@ The analysis workflow writes:
 - `birdnet_identifications_by_species_by_month.png`
 - `birdnet_monthly_diversity_metrics.png`
 - `birdnet_monthly_diversity_metrics_daily_incidence.png`
-- `birdnet_raw_species_richness_by_month.png`
+- `birdnet_raw_species_richness_by_diversity_window.png`
 - `birdnet_periodicity.png`  
   overall temporal-diagnostics figure combining all recorders currently present in the analysis, with ACF, PACF, and spectral-density panels for detections and unique species
 
@@ -460,7 +460,7 @@ The analysis workflow writes:
 In the species-frequency plots, the identification axis is shown on a log<sub>10</sub> scale, and common names are displayed in lowercase except where proper nouns remain capitalised. Latin names are italicised in the species-axis labels.
 The root-level analysis figures are the combined overall results across all recorders currently present in `out/`. Additional recorder-comparison figures are written as multi-panel plots, and recorder-specific figures are written into the `recorders/` subdirectory as each recorder becomes available.
 The detections-over-time plots now include two versions: a log<sub>10</sub>-scale plot with black bars and a red trailing running mean controlled by `rolling_mean_window_days`, and a separate linear-scale plot with black bars only and no running mean. The linear-scale versions include low-alpha background bands showing local morning twilight (pink), daylight (yellow), evening twilight (pink), and night (dark blue).
-The count-based diversity metrics treat the number of detections per species as the abundance proxy for Shannon, Simpson, and Hill-number calculations, and are produced across user-defined diversity windows set with `diversity_window_days`. A parallel daily-incidence diversity summary is also written, and raw species richness by calendar month is plotted separately.
+The count-based diversity metrics treat the number of detections per species as the abundance proxy for Shannon, Simpson, and Hill-number calculations, and are produced across user-defined diversity windows set with `diversity_window_days`. A parallel daily-incidence diversity summary is also written, and raw species richness is summarized across those same diversity windows in a separate plot/table.
 The top-species time-series plots default to 24-hour bins through `top_species_time_bin_minutes <- 24 × 60`, but that bin size can be changed directly in `scripts/analyse_birdnet_output.R`.
 In the recorder-comparison diversity figure, each recorder-by-metric panel now uses its own y-axis range so Shannon, Simpson, and Hill-number panels are scaled to their local maxima.
 The temporal periodicity figures now show both detections per time bin and unique species identified per time bin. Autocorrelation function (ACF) and partial autocorrelation function (PACF) panels include approximate type I error bands (<code>± 1.96/√<em>N</em></code>), spectral-density panels mark the strongest candidate periods, and the companion Ljung-Box CSV outputs provide a compact test summary at identified lags for easier interpretation of recurring temporal structure.

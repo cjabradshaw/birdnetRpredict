@@ -176,6 +176,24 @@ build_complete_time_grid <- function(start_time, end_time, bin_minutes, timezone
   seq(from = start_bin, to = end_bin, by = sprintf("%d mins", bin_minutes))
 }
 
+assign_diversity_windows <- function(local_dates, anchor_date, diversity_window_days) {
+  diversity_window_offsets <- as.integer(difftime(local_dates, anchor_date, units = "days"))
+  diversity_window_start <- anchor_date + (diversity_window_offsets %/% diversity_window_days) * diversity_window_days
+  diversity_window_end <- diversity_window_start + diversity_window_days - 1L
+  diversity_window_label <- sprintf(
+    "%s to %s",
+    format(diversity_window_start, "%Y-%m-%d"),
+    format(diversity_window_end, "%Y-%m-%d")
+  )
+
+  data.frame(
+    diversity_window_start = as.Date(diversity_window_start),
+    diversity_window_end = as.Date(diversity_window_end),
+    diversity_window_label = diversity_window_label,
+    stringsAsFactors = FALSE
+  )
+}
+
 make_placeholder_plot <- function(title_text, subtitle_text, body_text) {
   ggplot2::ggplot(data.frame(x = 0.5, y = 0.5), ggplot2::aes(x = x, y = y)) +
     ggplot2::geom_text(label = body_text, size = 5, lineheight = 1.1) +
@@ -1144,10 +1162,10 @@ calculate_diversity_metrics <- function(detection_counts) {
     return(data.frame(
       total_detections = 0,
       species_richness = 0,
-      shannon_index = NA_real_,
-      simpson_index = NA_real_,
-      hill_q1 = NA_real_,
-      hill_q2 = NA_real_
+      shannon_index = 0,
+      simpson_index = 0,
+      hill_q1 = 0,
+      hill_q2 = 0
     ))
   }
 
@@ -1163,6 +1181,79 @@ calculate_diversity_metrics <- function(detection_counts) {
     hill_q1 = exp(shannon_index),
     hill_q2 = 1 / simpson_concentration
   )
+}
+
+build_diversity_window_metadata <- function(summary_metadata, diversity_window_days, anchor_date) {
+  valid_metadata <- unique(
+    summary_metadata[
+      !is.na(summary_metadata$recorder_id) &
+        !is.na(summary_metadata$local_date),
+      c("recorder_id", "local_date"),
+      drop = FALSE
+    ]
+  )
+
+  if (nrow(valid_metadata) == 0) {
+    return(data.frame(
+      recorder_id = character(),
+      diversity_window_start = as.Date(character()),
+      diversity_window_end = as.Date(character()),
+      diversity_window_label = character(),
+      sampled_days = integer(),
+      data_available = logical(),
+      stringsAsFactors = FALSE
+    ))
+  }
+
+  valid_metadata <- cbind(
+    valid_metadata,
+    assign_diversity_windows(valid_metadata$local_date, anchor_date, diversity_window_days)
+  )
+  sampled_days <- aggregate(
+    list(sampled_days = rep(1L, nrow(valid_metadata))),
+    by = list(
+      recorder_id = valid_metadata$recorder_id,
+      diversity_window_start = valid_metadata$diversity_window_start,
+      diversity_window_end = valid_metadata$diversity_window_end,
+      diversity_window_label = valid_metadata$diversity_window_label
+    ),
+    FUN = sum
+  )
+
+  window_grid <- do.call(
+    rbind,
+    lapply(split(valid_metadata, valid_metadata$recorder_id), function(recorder_df) {
+      recorder_window_start <- min(recorder_df$diversity_window_start)
+      recorder_window_end <- max(recorder_df$diversity_window_start)
+      all_window_starts <- seq.Date(
+        from = recorder_window_start,
+        to = recorder_window_end,
+        by = diversity_window_days
+      )
+
+      data.frame(
+        recorder_id = recorder_df$recorder_id[[1]],
+        diversity_window_start = as.Date(all_window_starts),
+        diversity_window_end = as.Date(all_window_starts + diversity_window_days - 1L),
+        diversity_window_label = sprintf(
+          "%s to %s",
+          format(all_window_starts, "%Y-%m-%d"),
+          format(all_window_starts + diversity_window_days - 1L, "%Y-%m-%d")
+        ),
+        stringsAsFactors = FALSE
+      )
+    })
+  )
+
+  window_grid <- merge(
+    window_grid,
+    sampled_days,
+    by = c("recorder_id", "diversity_window_start", "diversity_window_end", "diversity_window_label"),
+    all.x = TRUE
+  )
+  window_grid$sampled_days[is.na(window_grid$sampled_days)] <- 0L
+  window_grid$data_available <- window_grid$sampled_days > 0
+  window_grid[order(window_grid$recorder_id, window_grid$diversity_window_start), , drop = FALSE]
 }
 
 build_monthly_daylight_correction_summary <- function(filtered_detections,
@@ -1582,28 +1673,74 @@ build_monthly_daylight_correction_summary <- function(filtered_detections,
   )
 }
 
-build_monthly_diversity_summary <- function(filtered_detections, timezone, diversity_window_days) {
-  grouped_detections <- split(
-    filtered_detections,
-    interaction(filtered_detections$recorder_id, filtered_detections$diversity_window_start, drop = TRUE)
-  )
+build_monthly_diversity_summary <- function(filtered_detections, diversity_window_metadata, diversity_window_days) {
+  if (nrow(diversity_window_metadata) == 0) {
+    return(data.frame(
+      recorder_id = character(),
+      diversity_window_start = as.Date(character()),
+      diversity_window_end = as.Date(character()),
+      diversity_window_label = character(),
+      diversity_window_days = numeric(),
+      sampled_days = integer(),
+      data_available = logical(),
+      raw_total_detections = numeric(),
+      window_total_detections = numeric(),
+      species_richness = numeric(),
+      shannon_index = numeric(),
+      simpson_index = numeric(),
+      hill_q1 = numeric(),
+      hill_q2 = numeric(),
+      stringsAsFactors = FALSE
+    ))
+  }
 
-  monthly_diversity_list <- lapply(grouped_detections, function(group_df) {
-    raw_total_detections <- nrow(group_df)
-    species_counts <- aggregate(
-      list(detection_count = rep(1, nrow(group_df))),
-      by = list(scientific_name = group_df$scientific_name),
-      FUN = sum
+  if (nrow(filtered_detections) > 0) {
+    grouped_detections <- split(
+      filtered_detections,
+      interaction(filtered_detections$recorder_id, filtered_detections$diversity_window_start, drop = TRUE)
     )
-    diversity_metrics <- calculate_diversity_metrics(species_counts$detection_count)
-    names(diversity_metrics)[names(diversity_metrics) == "total_detections"] <- "window_total_detections"
+  } else {
+    grouped_detections <- list()
+  }
+
+  monthly_diversity_list <- lapply(seq_len(nrow(diversity_window_metadata)), function(index) {
+    window_row <- diversity_window_metadata[index, , drop = FALSE]
+    group_key <- interaction(window_row$recorder_id, window_row$diversity_window_start, drop = TRUE)
+    group_df <- grouped_detections[[as.character(group_key)]]
+
+    if (!window_row$data_available[[1]]) {
+      diversity_metrics <- data.frame(
+        window_total_detections = NA_real_,
+        species_richness = NA_real_,
+        shannon_index = NA_real_,
+        simpson_index = NA_real_,
+        hill_q1 = NA_real_,
+        hill_q2 = NA_real_
+      )
+      raw_total_detections <- NA_real_
+    } else if (is.null(group_df) || nrow(group_df) == 0) {
+      diversity_metrics <- calculate_diversity_metrics(numeric(0))
+      names(diversity_metrics)[names(diversity_metrics) == "total_detections"] <- "window_total_detections"
+      raw_total_detections <- 0
+    } else {
+      species_counts <- aggregate(
+        list(detection_count = rep(1, nrow(group_df))),
+        by = list(scientific_name = group_df$scientific_name),
+        FUN = sum
+      )
+      diversity_metrics <- calculate_diversity_metrics(species_counts$detection_count)
+      names(diversity_metrics)[names(diversity_metrics) == "total_detections"] <- "window_total_detections"
+      raw_total_detections <- nrow(group_df)
+    }
 
     data.frame(
-      recorder_id = group_df$recorder_id[[1]],
-      diversity_window_start = as.Date(group_df$diversity_window_start[[1]]),
-      diversity_window_end = as.Date(group_df$diversity_window_end[[1]]),
-      diversity_window_label = as.character(group_df$diversity_window_label[[1]]),
+      recorder_id = window_row$recorder_id[[1]],
+      diversity_window_start = as.Date(window_row$diversity_window_start[[1]]),
+      diversity_window_end = as.Date(window_row$diversity_window_end[[1]]),
+      diversity_window_label = as.character(window_row$diversity_window_label[[1]]),
       diversity_window_days = diversity_window_days,
+      sampled_days = as.integer(window_row$sampled_days[[1]]),
+      data_available = window_row$data_available[[1]],
       raw_total_detections = raw_total_detections,
       diversity_metrics,
       stringsAsFactors = FALSE
@@ -1611,25 +1748,21 @@ build_monthly_diversity_summary <- function(filtered_detections, timezone, diver
   })
 
   monthly_diversity_summary <- do.call(rbind, monthly_diversity_list)
-  monthly_diversity_summary <- monthly_diversity_summary[
-    order(monthly_diversity_summary$recorder_id, monthly_diversity_summary$diversity_window_start),
-    ,
-    drop = FALSE
-  ]
-  monthly_diversity_summary$diversity_window_start <- as.Date(monthly_diversity_summary$diversity_window_start)
-  monthly_diversity_summary$diversity_window_end <- as.Date(monthly_diversity_summary$diversity_window_end)
-  monthly_diversity_summary
+  monthly_diversity_summary[order(monthly_diversity_summary$recorder_id, monthly_diversity_summary$diversity_window_start), , drop = FALSE]
 }
 
-build_monthly_daily_incidence_diversity_summary <- function(filtered_detections, timezone, diversity_window_days) {
-  if (nrow(filtered_detections) == 0) {
+build_monthly_daily_incidence_diversity_summary <- function(filtered_detections,
+                                                            diversity_window_metadata,
+                                                            diversity_window_days) {
+  if (nrow(diversity_window_metadata) == 0) {
     return(data.frame(
       recorder_id = character(),
       diversity_window_start = as.Date(character()),
       diversity_window_end = as.Date(character()),
       diversity_window_label = character(),
       diversity_window_days = numeric(),
-      sampled_days = numeric(),
+      sampled_days = integer(),
+      data_available = logical(),
       raw_total_detections = numeric(),
       total_incidence_weight = numeric(),
       species_richness = numeric(),
@@ -1641,84 +1774,105 @@ build_monthly_daily_incidence_diversity_summary <- function(filtered_detections,
     ))
   }
 
-  sampled_days_df <- unique(
-    filtered_detections[, c("recorder_id", "local_date", "diversity_window_start", "diversity_window_end", "diversity_window_label"), drop = FALSE]
-  )
-  sampled_days_summary <- aggregate(
-    list(sampled_days = rep(1, nrow(sampled_days_df))),
-    by = list(
-      recorder_id = sampled_days_df$recorder_id,
-      diversity_window_start = sampled_days_df$diversity_window_start,
-      diversity_window_end = sampled_days_df$diversity_window_end,
-      diversity_window_label = sampled_days_df$diversity_window_label
-    ),
-    FUN = sum
-  )
+  if (nrow(filtered_detections) > 0) {
+    total_detections_summary <- aggregate(
+      list(raw_total_detections = rep(1, nrow(filtered_detections))),
+      by = list(recorder_id = filtered_detections$recorder_id, diversity_window_start = filtered_detections$diversity_window_start),
+      FUN = sum
+    )
 
-  total_detections_summary <- aggregate(
-    list(raw_total_detections = rep(1, nrow(filtered_detections))),
-    by = list(recorder_id = filtered_detections$recorder_id, diversity_window_start = filtered_detections$diversity_window_start),
-    FUN = sum
-  )
+    species_day_presence <- unique(filtered_detections[, c("recorder_id", "diversity_window_start", "local_date", "scientific_name"), drop = FALSE])
+    species_day_counts <- aggregate(
+      list(days_detected = rep(1, nrow(species_day_presence))),
+      by = list(
+        recorder_id = species_day_presence$recorder_id,
+        diversity_window_start = species_day_presence$diversity_window_start,
+        scientific_name = species_day_presence$scientific_name
+      ),
+      FUN = sum
+    )
+  } else {
+    total_detections_summary <- data.frame(
+      recorder_id = character(),
+      diversity_window_start = as.Date(character()),
+      raw_total_detections = numeric(),
+      stringsAsFactors = FALSE
+    )
+    species_day_counts <- data.frame(
+      recorder_id = character(),
+      diversity_window_start = as.Date(character()),
+      scientific_name = character(),
+      days_detected = numeric(),
+      stringsAsFactors = FALSE
+    )
+  }
 
-  species_day_presence <- unique(filtered_detections[, c("recorder_id", "diversity_window_start", "local_date", "scientific_name"), drop = FALSE])
-  species_day_counts <- aggregate(
-    list(days_detected = rep(1, nrow(species_day_presence))),
-    by = list(
-      recorder_id = species_day_presence$recorder_id,
-      diversity_window_start = species_day_presence$diversity_window_start,
-      scientific_name = species_day_presence$scientific_name
-    ),
-    FUN = sum
-  )
   species_day_counts <- merge(
     species_day_counts,
-    sampled_days_summary,
+    diversity_window_metadata[, c("recorder_id", "diversity_window_start", "sampled_days"), drop = FALSE],
     by = c("recorder_id", "diversity_window_start"),
     all.x = TRUE
   )
-  species_day_counts$incidence_weight <- with(
-    species_day_counts,
-    ifelse(sampled_days > 0, days_detected / sampled_days, 0)
-  )
+  if (nrow(species_day_counts) > 0) {
+    species_day_counts$incidence_weight <- with(
+      species_day_counts,
+      ifelse(sampled_days > 0, days_detected / sampled_days, 0)
+    )
+    grouped_incidence <- split(
+      species_day_counts,
+      interaction(species_day_counts$recorder_id, species_day_counts$diversity_window_start, drop = TRUE)
+    )
+  } else {
+    grouped_incidence <- list()
+  }
 
-  grouped_incidence <- split(
-    species_day_counts,
-    interaction(species_day_counts$recorder_id, species_day_counts$diversity_window_start, drop = TRUE)
-  )
-  monthly_diversity_list <- lapply(grouped_incidence, function(group_df) {
-    incidence_metrics <- calculate_diversity_metrics(group_df$incidence_weight)
-    names(incidence_metrics)[names(incidence_metrics) == "total_detections"] <- "total_incidence_weight"
-    sampled_days <- unique(group_df$sampled_days)
+  monthly_diversity_list <- lapply(seq_len(nrow(diversity_window_metadata)), function(index) {
+    window_row <- diversity_window_metadata[index, , drop = FALSE]
+    group_key <- interaction(window_row$recorder_id, window_row$diversity_window_start, drop = TRUE)
+    group_df <- grouped_incidence[[as.character(group_key)]]
     raw_match <- total_detections_summary[
-      total_detections_summary$recorder_id == group_df$recorder_id[[1]] &
-        total_detections_summary$diversity_window_start == as.Date(group_df$diversity_window_start[[1]]),
+      total_detections_summary$recorder_id == window_row$recorder_id[[1]] &
+        total_detections_summary$diversity_window_start == as.Date(window_row$diversity_window_start[[1]]),
       ,
       drop = FALSE
     ]
 
+    if (!window_row$data_available[[1]]) {
+      incidence_metrics <- data.frame(
+        total_incidence_weight = NA_real_,
+        species_richness = NA_real_,
+        shannon_index = NA_real_,
+        simpson_index = NA_real_,
+        hill_q1 = NA_real_,
+        hill_q2 = NA_real_
+      )
+      raw_total_detections <- NA_real_
+    } else if (is.null(group_df) || nrow(group_df) == 0) {
+      incidence_metrics <- calculate_diversity_metrics(numeric(0))
+      names(incidence_metrics)[names(incidence_metrics) == "total_detections"] <- "total_incidence_weight"
+      raw_total_detections <- 0
+    } else {
+      incidence_metrics <- calculate_diversity_metrics(group_df$incidence_weight)
+      names(incidence_metrics)[names(incidence_metrics) == "total_detections"] <- "total_incidence_weight"
+      raw_total_detections <- if (nrow(raw_match) > 0) raw_match$raw_total_detections[[1]] else 0
+    }
+
     data.frame(
-      recorder_id = group_df$recorder_id[[1]],
-      diversity_window_start = as.Date(group_df$diversity_window_start[[1]]),
-      diversity_window_end = as.Date(group_df$diversity_window_end[[1]]),
-      diversity_window_label = as.character(group_df$diversity_window_label[[1]]),
+      recorder_id = window_row$recorder_id[[1]],
+      diversity_window_start = as.Date(window_row$diversity_window_start[[1]]),
+      diversity_window_end = as.Date(window_row$diversity_window_end[[1]]),
+      diversity_window_label = as.character(window_row$diversity_window_label[[1]]),
       diversity_window_days = diversity_window_days,
-      sampled_days = if (length(sampled_days) > 0) sampled_days[[1]] else NA_real_,
-      raw_total_detections = if (nrow(raw_match) > 0) raw_match$raw_total_detections[[1]] else NA_real_,
+      sampled_days = as.integer(window_row$sampled_days[[1]]),
+      data_available = window_row$data_available[[1]],
+      raw_total_detections = raw_total_detections,
       incidence_metrics,
       stringsAsFactors = FALSE
     )
   })
 
   monthly_diversity_summary <- do.call(rbind, monthly_diversity_list)
-  monthly_diversity_summary <- monthly_diversity_summary[
-    order(monthly_diversity_summary$recorder_id, monthly_diversity_summary$diversity_window_start),
-    ,
-    drop = FALSE
-  ]
-  monthly_diversity_summary$diversity_window_start <- as.Date(monthly_diversity_summary$diversity_window_start)
-  monthly_diversity_summary$diversity_window_end <- as.Date(monthly_diversity_summary$diversity_window_end)
-  monthly_diversity_summary
+  monthly_diversity_summary[order(monthly_diversity_summary$recorder_id, monthly_diversity_summary$diversity_window_start), , drop = FALSE]
 }
 
 build_monthly_diversity_long <- function(monthly_diversity_summary) {
@@ -1766,84 +1920,150 @@ add_running_mean_to_time_series <- function(time_series_summary, bin_minutes, ru
     time_series_summary$identification_count_running_mean <- numeric()
     time_series_summary$identification_count_plot <- numeric()
     time_series_summary$identification_count_running_mean_plot <- numeric()
+    time_series_summary$zero_detection_point <- numeric()
     return(time_series_summary)
   }
 
   window_bins <- max(1L, as.integer(round((running_days * 24 * 60) / bin_minutes)))
   counts <- as.numeric(time_series_summary$identification_count)
-  cumulative_counts <- c(0, cumsum(counts))
-  running_mean <- vapply(
-    seq_along(counts),
-    function(index) {
-      start_index <- max(1L, index - window_bins + 1L)
-      total_count <- cumulative_counts[index + 1L] - cumulative_counts[start_index]
-      total_count / (index - start_index + 1L)
-    },
-    numeric(1)
-  )
+  data_available <- as.logical(time_series_summary$data_available)
+  running_mean <- rep(NA_real_, length(counts))
+
+  available_indices <- which(data_available)
+  if (length(available_indices) > 0) {
+    gap_breaks <- c(0L, which(diff(available_indices) > 1L), length(available_indices))
+    for (segment_index in seq_len(length(gap_breaks) - 1L)) {
+      segment_positions <- available_indices[(gap_breaks[[segment_index]] + 1L):gap_breaks[[segment_index + 1L]]]
+      segment_counts <- counts[segment_positions]
+      cumulative_counts <- c(0, cumsum(segment_counts))
+      segment_running_mean <- vapply(
+        seq_along(segment_counts),
+        function(index) {
+          start_index <- max(1L, index - window_bins + 1L)
+          total_count <- cumulative_counts[index + 1L] - cumulative_counts[start_index]
+          total_count / (index - start_index + 1L)
+        },
+        numeric(1)
+      )
+      running_mean[segment_positions] <- segment_running_mean
+    }
+  }
 
   time_series_summary$identification_count_running_mean <- running_mean
   time_series_summary$identification_count_plot <- ifelse(
-    time_series_summary$identification_count > 0,
+    time_series_summary$data_available & time_series_summary$identification_count > 0,
     time_series_summary$identification_count,
     NA_real_
   )
   time_series_summary$identification_count_running_mean_plot <- ifelse(
-    time_series_summary$identification_count_running_mean > 0,
+    time_series_summary$data_available & time_series_summary$identification_count_running_mean > 0,
     time_series_summary$identification_count_running_mean,
+    NA_real_
+  )
+  time_series_summary$zero_detection_point <- ifelse(
+    time_series_summary$data_available & time_series_summary$identification_count == 0,
+    0,
     NA_real_
   )
   time_series_summary
 }
 
-build_time_series_summary_for_subset <- function(detections_subset, bin_minutes, timezone, rolling_mean_window_days = 7) {
-  if (nrow(detections_subset) == 0) {
+build_available_time_bin_summary <- function(summary_metadata_subset, bin_minutes, timezone) {
+  valid_metadata <- summary_metadata_subset[
+    !is.na(summary_metadata_subset$recording_start_time),
+    ,
+    drop = FALSE
+  ]
+
+  if (nrow(valid_metadata) == 0) {
     return(data.frame(
       time_bin = as.POSIXct(character()),
+      data_available = logical(),
+      stringsAsFactors = FALSE
+    ))
+  }
+
+  duration_lookup <- estimate_recording_duration_seconds(valid_metadata)
+  valid_metadata <- merge(valid_metadata, duration_lookup, by = "recorder_id", all.x = TRUE)
+  valid_metadata$recording_end_time <- valid_metadata$recording_start_time + valid_metadata$estimated_duration_seconds
+
+  overall_grid <- build_complete_time_grid(
+    start_time = min(valid_metadata$recording_start_time),
+    end_time = max(valid_metadata$recording_end_time - 1),
+    bin_minutes = bin_minutes,
+    timezone = timezone
+  )
+
+  available_bins <- unique(do.call(
+    c,
+    lapply(seq_len(nrow(valid_metadata)), function(index) {
+      build_complete_time_grid(
+        start_time = valid_metadata$recording_start_time[[index]],
+        end_time = valid_metadata$recording_end_time[[index]] - 1,
+        bin_minutes = bin_minutes,
+        timezone = timezone
+      )
+    })
+  ))
+
+  time_bin_summary <- data.frame(
+    time_bin = overall_grid,
+    data_available = overall_grid %in% available_bins,
+    stringsAsFactors = FALSE
+  )
+  time_bin_summary[order(time_bin_summary$time_bin), , drop = FALSE]
+}
+
+build_time_series_summary_for_subset <- function(detections_subset,
+                                                 summary_metadata_subset,
+                                                 bin_minutes,
+                                                 timezone,
+                                                 rolling_mean_window_days = 7) {
+  available_time_bins <- build_available_time_bin_summary(
+    summary_metadata_subset = summary_metadata_subset,
+    bin_minutes = bin_minutes,
+    timezone = timezone
+  )
+
+  if (nrow(available_time_bins) == 0) {
+    return(data.frame(
+      time_bin = as.POSIXct(character()),
+      data_available = logical(),
       identification_count = integer(),
       unique_species_count = integer(),
       identification_count_running_mean = numeric(),
       identification_count_plot = numeric(),
-      identification_count_running_mean_plot = numeric()
+      identification_count_running_mean_plot = numeric(),
+      zero_detection_point = numeric(),
+      stringsAsFactors = FALSE
     ))
   }
 
-  detections_subset <- detections_subset[order(detections_subset$date_time, detections_subset$scientific_name), , drop = FALSE]
-  detections_subset$time_bin <- floor_to_bin(
-    detections_subset$date_time,
-    bin_minutes = bin_minutes,
-    timezone = timezone
-  )
-  subset_time_grid <- build_complete_time_grid(
-    start_time = min(detections_subset$date_time),
-    end_time = max(detections_subset$date_time),
-    bin_minutes = bin_minutes,
-    timezone = timezone
-  )
+  if (nrow(detections_subset) > 0) {
+    detections_subset <- detections_subset[order(detections_subset$date_time, detections_subset$scientific_name), , drop = FALSE]
+    detections_subset$time_bin <- floor_to_bin(
+      detections_subset$date_time,
+      bin_minutes = bin_minutes,
+      timezone = timezone
+    )
 
-  detections_by_bin <- aggregate(
-    list(identification_count = rep(1L, nrow(detections_subset))),
-    by = list(time_bin = detections_subset$time_bin),
-    FUN = sum
-  )
-  species_richness_by_bin <- aggregate(
-    list(unique_species_count = detections_subset$scientific_name),
-    by = list(time_bin = detections_subset$time_bin),
-    FUN = function(x) length(unique(x))
-  )
+    detections_by_bin <- aggregate(
+      list(identification_count = rep(1L, nrow(detections_subset))),
+      by = list(time_bin = detections_subset$time_bin),
+      FUN = sum
+    )
+    species_richness_by_bin <- aggregate(
+      list(unique_species_count = detections_subset$scientific_name),
+      by = list(time_bin = detections_subset$time_bin),
+      FUN = function(x) length(unique(x))
+    )
+  } else {
+    detections_by_bin <- data.frame(time_bin = as.POSIXct(character()), identification_count = integer())
+    species_richness_by_bin <- data.frame(time_bin = as.POSIXct(character()), unique_species_count = integer())
+  }
 
-  time_series_summary <- merge(
-    data.frame(time_bin = subset_time_grid),
-    detections_by_bin,
-    by = "time_bin",
-    all.x = TRUE
-  )
-  time_series_summary <- merge(
-    time_series_summary,
-    species_richness_by_bin,
-    by = "time_bin",
-    all.x = TRUE
-  )
+  time_series_summary <- merge(available_time_bins, detections_by_bin, by = "time_bin", all.x = TRUE)
+  time_series_summary <- merge(time_series_summary, species_richness_by_bin, by = "time_bin", all.x = TRUE)
   time_series_summary$identification_count[is.na(time_series_summary$identification_count)] <- 0L
   time_series_summary$unique_species_count[is.na(time_series_summary$unique_species_count)] <- 0L
   time_series_summary <- time_series_summary[order(time_series_summary$time_bin), , drop = FALSE]
@@ -1854,10 +2074,132 @@ build_time_series_summary_for_subset <- function(detections_subset, bin_minutes,
   )
 }
 
-build_cumulative_new_species_for_subset <- function(detections_subset, bin_minutes, timezone) {
-  if (nrow(detections_subset) == 0) {
+build_no_data_bands <- function(time_series_summary, bin_minutes) {
+  if (nrow(time_series_summary) == 0) {
+    return(data.frame(
+      xmin = as.POSIXct(character()),
+      xmax = as.POSIXct(character()),
+      stringsAsFactors = FALSE
+    ))
+  }
+
+  no_data_indices <- which(!time_series_summary$data_available)
+  if (length(no_data_indices) == 0) {
+    return(data.frame(
+      xmin = as.POSIXct(character()),
+      xmax = as.POSIXct(character()),
+      stringsAsFactors = FALSE
+    ))
+  }
+
+  gap_breaks <- c(0L, which(diff(no_data_indices) > 1L), length(no_data_indices))
+  half_bin_seconds <- bin_minutes * 60 / 2
+  bands <- lapply(seq_len(length(gap_breaks) - 1L), function(index) {
+    segment_positions <- no_data_indices[(gap_breaks[[index]] + 1L):gap_breaks[[index + 1L]]]
+    data.frame(
+      xmin = time_series_summary$time_bin[min(segment_positions)] - half_bin_seconds,
+      xmax = time_series_summary$time_bin[max(segment_positions)] + half_bin_seconds,
+      stringsAsFactors = FALSE
+    )
+  })
+
+  do.call(rbind, bands)
+}
+
+build_no_data_window_bands <- function(window_summary, group_columns = character()) {
+  empty_columns <- c(
+    list(
+      xmin = as.Date(character()),
+      xmax = as.Date(character())
+    ),
+    stats::setNames(
+      lapply(group_columns, function(column_name) vector(mode = typeof(window_summary[[column_name]]), length = 0L)),
+      group_columns
+    )
+  )
+  empty_df <- as.data.frame(empty_columns, stringsAsFactors = FALSE)
+
+  if (nrow(window_summary) == 0 || !"data_available" %in% names(window_summary)) {
+    return(empty_df)
+  }
+
+  grouped_windows <- if (length(group_columns) == 0) {
+    list(window_summary)
+  } else {
+    split(window_summary, interaction(window_summary[, group_columns, drop = FALSE], drop = TRUE))
+  }
+
+  band_list <- lapply(grouped_windows, function(group_df) {
+    group_df <- group_df[order(group_df$diversity_window_start), , drop = FALSE]
+    no_data_windows <- group_df[!group_df$data_available, , drop = FALSE]
+    if (nrow(no_data_windows) == 0) {
+      return(NULL)
+    }
+
+    segment_breaks <- c(
+      TRUE,
+      no_data_windows$diversity_window_start[-1] > (no_data_windows$diversity_window_end[-nrow(no_data_windows)] + 1)
+    )
+    segment_id <- cumsum(segment_breaks)
+    band_df <- do.call(
+      rbind,
+      lapply(split(no_data_windows, segment_id), function(segment_df) {
+        data.frame(
+          xmin = min(segment_df$diversity_window_start),
+          xmax = max(segment_df$diversity_window_end) + 1,
+          stringsAsFactors = FALSE
+        )
+      })
+    )
+
+    if (length(group_columns) > 0) {
+      for (column_name in group_columns) {
+        band_df[[column_name]] <- group_df[[column_name]][[1]]
+      }
+    }
+
+    band_df
+  })
+
+  band_list <- Filter(Negate(is.null), band_list)
+  if (length(band_list) == 0) {
+    return(empty_df)
+  }
+
+  do.call(rbind, band_list)
+}
+
+extract_longest_available_segment <- function(time_series_summary) {
+  if (nrow(time_series_summary) == 0 || !"data_available" %in% names(time_series_summary)) {
+    return(time_series_summary[0, , drop = FALSE])
+  }
+
+  available_indices <- which(time_series_summary$data_available)
+  if (length(available_indices) == 0) {
+    return(time_series_summary[0, , drop = FALSE])
+  }
+
+  segment_breaks <- c(0L, which(diff(available_indices) > 1L), length(available_indices))
+  segment_lengths <- diff(segment_breaks)
+  longest_segment_index <- which.max(segment_lengths)
+  segment_positions <- available_indices[(segment_breaks[[longest_segment_index]] + 1L):segment_breaks[[longest_segment_index + 1L]]]
+  time_series_summary[segment_positions, , drop = FALSE]
+}
+
+build_cumulative_new_species_for_subset <- function(detections_subset,
+                                                    summary_metadata_subset,
+                                                    bin_minutes,
+                                                    timezone) {
+  available_time_bins <- build_available_time_bin_summary(
+    summary_metadata_subset = summary_metadata_subset,
+    bin_minutes = bin_minutes,
+    timezone = timezone
+  )
+
+  if (nrow(available_time_bins) == 0) {
     return(data.frame(
       time_bin = as.POSIXct(character()),
+      data_available = logical(),
       new_species_count = integer(),
       first_detected_species = character(),
       cumulative_new_species = integer(),
@@ -1865,33 +2207,32 @@ build_cumulative_new_species_for_subset <- function(detections_subset, bin_minut
     ))
   }
 
-  detections_subset <- detections_subset[order(detections_subset$date_time, detections_subset$scientific_name), , drop = FALSE]
-  subset_time_grid <- build_complete_time_grid(
-    start_time = min(detections_subset$date_time),
-    end_time = max(detections_subset$date_time),
-    bin_minutes = bin_minutes,
-    timezone = timezone
-  )
-  first_detections <- detections_subset[!duplicated(detections_subset$scientific_name), , drop = FALSE]
-  first_detections$first_detection_bin <- floor_to_bin(
-    first_detections$date_time,
-    bin_minutes = bin_minutes,
-    timezone = timezone
-  )
+  if (nrow(detections_subset) > 0) {
+    detections_subset <- detections_subset[order(detections_subset$date_time, detections_subset$scientific_name), , drop = FALSE]
+    first_detections <- detections_subset[!duplicated(detections_subset$scientific_name), , drop = FALSE]
+    first_detections$first_detection_bin <- floor_to_bin(
+      first_detections$date_time,
+      bin_minutes = bin_minutes,
+      timezone = timezone
+    )
 
-  new_species_by_bin <- aggregate(
-    list(new_species_count = rep(1L, nrow(first_detections))),
-    by = list(time_bin = first_detections$first_detection_bin),
-    FUN = sum
-  )
-  species_first_detected <- aggregate(
-    list(first_detected_species = first_detections$common_name),
-    by = list(time_bin = first_detections$first_detection_bin),
-    FUN = function(x) paste(unique(x), collapse = "; ")
-  )
+    new_species_by_bin <- aggregate(
+      list(new_species_count = rep(1L, nrow(first_detections))),
+      by = list(time_bin = first_detections$first_detection_bin),
+      FUN = sum
+    )
+    species_first_detected <- aggregate(
+      list(first_detected_species = first_detections$common_name),
+      by = list(time_bin = first_detections$first_detection_bin),
+      FUN = function(x) paste(unique(x), collapse = "; ")
+    )
+  } else {
+    new_species_by_bin <- data.frame(time_bin = as.POSIXct(character()), new_species_count = integer())
+    species_first_detected <- data.frame(time_bin = as.POSIXct(character()), first_detected_species = character())
+  }
 
   cumulative_new_species <- merge(
-    data.frame(time_bin = subset_time_grid),
+    available_time_bins,
     new_species_by_bin,
     by = "time_bin",
     all.x = TRUE
@@ -2101,7 +2442,8 @@ build_temporal_diagnostics_for_metric <- function(time_series_summary,
                                                   metric_name,
                                                   bin_minutes,
                                                   periodicity_max_lag_bins) {
-  values <- as.numeric(time_series_summary[[value_column]])
+  analysis_time_series <- extract_longest_available_segment(time_series_summary)
+  values <- as.numeric(analysis_time_series[[value_column]])
   diagnostics <- empty_temporal_diagnostics_df()
   tests <- empty_temporal_tests_df()
   peaks <- empty_temporal_peaks_df()
@@ -2366,14 +2708,20 @@ build_temporal_diagnostics_plot <- function(diagnostics_df,
   plot_object
 }
 
-build_top_species_time_series <- function(detections_subset, bin_minutes, top_n = 10L, timezone) {
+build_top_species_time_series <- function(detections_subset,
+                                          summary_metadata_subset,
+                                          bin_minutes,
+                                          top_n = 10L,
+                                          timezone) {
   if (nrow(detections_subset) == 0) {
     return(data.frame(
       time_bin = as.POSIXct(character()),
+      data_available = logical(),
       scientific_name = character(),
       common_name = character(),
       species_label = character(),
       identification_count = integer(),
+      identification_count_plot = numeric(),
       stringsAsFactors = FALSE
     ))
   }
@@ -2399,9 +2747,8 @@ build_top_species_time_series <- function(detections_subset, bin_minutes, top_n 
     timezone = timezone
   )
 
-  time_grid <- build_complete_time_grid(
-    start_time = min(detections_subset$date_time),
-    end_time = max(detections_subset$date_time),
+  available_time_bins <- build_available_time_bin_summary(
+    summary_metadata_subset = summary_metadata_subset,
     bin_minutes = bin_minutes,
     timezone = timezone
   )
@@ -2419,7 +2766,7 @@ build_top_species_time_series <- function(detections_subset, bin_minutes, top_n 
 
   species_lookup <- species_totals[, c("scientific_name", "common_name", "species_label"), drop = FALSE]
   species_time_grid <- merge(
-    data.frame(time_bin = time_grid),
+    available_time_bins,
     species_lookup,
     by = NULL
   )
@@ -2431,7 +2778,7 @@ build_top_species_time_series <- function(detections_subset, bin_minutes, top_n 
   )
   species_time_series$identification_count[is.na(species_time_series$identification_count)] <- 0L
   species_time_series$identification_count_plot <- ifelse(
-    species_time_series$identification_count > 0,
+    species_time_series$data_available & species_time_series$identification_count > 0,
     species_time_series$identification_count,
     NA_real_
   )
@@ -2683,14 +3030,10 @@ filtered_detections$month_num <- as.integer(format(filtered_detections$date_time
 filtered_detections$month_label <- factor(month.abb[filtered_detections$month_num], levels = month.abb)
 filtered_detections$month_start <- as.Date(strftime(filtered_detections$date_time, "%Y-%m-01", tz = analysis_timezone))
 filtered_detections$local_date <- as.Date(strftime(filtered_detections$date_time, "%Y-%m-%d", tz = analysis_timezone))
-diversity_anchor_date <- min(filtered_detections$local_date, na.rm = TRUE)
-diversity_window_offsets <- as.integer(difftime(filtered_detections$local_date, diversity_anchor_date, units = "days"))
-filtered_detections$diversity_window_start <- diversity_anchor_date + (diversity_window_offsets %/% diversity_window_days) * diversity_window_days
-filtered_detections$diversity_window_end <- filtered_detections$diversity_window_start + diversity_window_days - 1L
-filtered_detections$diversity_window_label <- sprintf(
-  "%s to %s",
-  format(filtered_detections$diversity_window_start, "%Y-%m-%d"),
-  format(filtered_detections$diversity_window_end, "%Y-%m-%d")
+diversity_anchor_date <- min(summary_file_metadata$local_date[!is.na(summary_file_metadata$local_date)], na.rm = TRUE)
+filtered_detections <- cbind(
+  filtered_detections,
+  assign_diversity_windows(filtered_detections$local_date, diversity_anchor_date, diversity_window_days)
 )
 filtered_detections$local_hour <- as.numeric(strftime(filtered_detections$date_time, "%H", tz = analysis_timezone)) +
   as.numeric(strftime(filtered_detections$date_time, "%M", tz = analysis_timezone)) / 60 +
@@ -2746,81 +3089,29 @@ if (nrow(light_phase_bundle$solar_times) > 0) {
   filtered_detections$light_phase <- NA_character_
 }
 
-time_grid <- build_complete_time_grid(
-  start_time = min(filtered_detections$date_time),
-  end_time = max(filtered_detections$date_time),
+time_series_summary <- build_time_series_summary_for_subset(
+  detections_subset = filtered_detections,
+  summary_metadata_subset = summary_file_metadata,
+  bin_minutes = bin_minutes,
+  timezone = analysis_timezone,
+  rolling_mean_window_days = rolling_mean_window_days
+)
+overall_no_data_bands <- build_no_data_bands(time_series_summary, bin_minutes = bin_minutes)
+top_species_time_bin_summary <- build_available_time_bin_summary(
+  summary_metadata_subset = summary_file_metadata,
+  bin_minutes = top_species_time_bin_minutes,
+  timezone = analysis_timezone
+)
+top_species_no_data_bands <- build_no_data_bands(
+  top_species_time_bin_summary,
+  bin_minutes = top_species_time_bin_minutes
+)
+cumulative_new_species <- build_cumulative_new_species_for_subset(
+  detections_subset = filtered_detections,
+  summary_metadata_subset = summary_file_metadata,
   bin_minutes = bin_minutes,
   timezone = analysis_timezone
 )
-
-detections_by_bin <- aggregate(
-  list(identification_count = rep(1L, nrow(filtered_detections))),
-  by = list(time_bin = filtered_detections$time_bin),
-  FUN = sum
-)
-
-species_richness_by_bin <- aggregate(
-  list(unique_species_count = filtered_detections$scientific_name),
-  by = list(time_bin = filtered_detections$time_bin),
-  FUN = function(x) length(unique(x))
-)
-
-time_series_summary <- merge(
-  data.frame(time_bin = time_grid),
-  detections_by_bin,
-  by = "time_bin",
-  all.x = TRUE
-)
-time_series_summary <- merge(
-  time_series_summary,
-  species_richness_by_bin,
-  by = "time_bin",
-  all.x = TRUE
-)
-time_series_summary$identification_count[is.na(time_series_summary$identification_count)] <- 0L
-time_series_summary$unique_species_count[is.na(time_series_summary$unique_species_count)] <- 0L
-time_series_summary <- time_series_summary[order(time_series_summary$time_bin), , drop = FALSE]
-time_series_summary <- add_running_mean_to_time_series(
-  time_series_summary,
-  bin_minutes = bin_minutes,
-  running_days = rolling_mean_window_days
-)
-
-first_detections <- filtered_detections[!duplicated(filtered_detections$scientific_name), , drop = FALSE]
-first_detections <- first_detections[order(first_detections$date_time, first_detections$scientific_name), , drop = FALSE]
-first_detections$first_detection_bin <- floor_to_bin(
-  first_detections$date_time,
-  bin_minutes = bin_minutes,
-  timezone = analysis_timezone
-)
-
-new_species_by_bin <- aggregate(
-  list(new_species_count = rep(1L, nrow(first_detections))),
-  by = list(time_bin = first_detections$first_detection_bin),
-  FUN = sum
-)
-
-species_first_detected <- aggregate(
-  list(first_detected_species = first_detections$common_name),
-  by = list(time_bin = first_detections$first_detection_bin),
-  FUN = function(x) paste(unique(x), collapse = "; ")
-)
-
-cumulative_new_species <- merge(
-  data.frame(time_bin = time_grid),
-  new_species_by_bin,
-  by = "time_bin",
-  all.x = TRUE
-)
-cumulative_new_species <- merge(
-  cumulative_new_species,
-  species_first_detected,
-  by = "time_bin",
-  all.x = TRUE
-)
-cumulative_new_species$new_species_count[is.na(cumulative_new_species$new_species_count)] <- 0L
-cumulative_new_species$first_detected_species[is.na(cumulative_new_species$first_detected_species)] <- ""
-cumulative_new_species$cumulative_new_species <- cumsum(cumulative_new_species$new_species_count)
 
 species_counts <- aggregate(
   list(identification_count = rep(1L, nrow(filtered_detections))),
@@ -2846,7 +3137,19 @@ species_counts <- species_counts[order(-species_counts$identification_count, spe
 species_counts$species_label <- factor(species_counts$species_label, levels = rev(species_counts$species_label))
 global_species_levels <- levels(species_counts$species_label)
 species_label_plotmath_lookup <- setNames(species_counts$species_label_plotmath, species_counts$species_label)
-observed_months <- unique(filtered_detections[, c("month_num", "month_label")])
+observed_months <- if (any(!is.na(summary_file_metadata$local_date))) {
+  data.frame(
+    month_num = as.integer(format(summary_file_metadata$local_date[!is.na(summary_file_metadata$local_date)], "%m")),
+    month_label = factor(
+      month.abb[as.integer(format(summary_file_metadata$local_date[!is.na(summary_file_metadata$local_date)], "%m"))],
+      levels = month.abb
+    ),
+    stringsAsFactors = FALSE
+  )
+} else {
+  unique(filtered_detections[, c("month_num", "month_label")])
+}
+observed_months <- unique(observed_months)
 observed_months <- observed_months[order(observed_months$month_num), , drop = FALSE]
 
 species_counts_by_month <- aggregate(
@@ -2917,7 +3220,8 @@ species_counts_by_month_positive <- species_counts_by_month[
 ]
 
 top_species_time_series <- build_top_species_time_series(
-  filtered_detections,
+  detections_subset = filtered_detections,
+  summary_metadata_subset = summary_file_metadata,
   bin_minutes = top_species_time_bin_minutes,
   top_n = 10L,
   timezone = analysis_timezone
@@ -2939,22 +3243,44 @@ time_series_by_recorder <- do.call(
   lapply(recorder_ids, function(recorder_id) {
     subset_detections <- filtered_detections[filtered_detections$recorder_id == recorder_id, , drop = FALSE]
     subset_time_series <- build_time_series_summary_for_subset(
-      subset_detections,
-      bin_minutes,
-      analysis_timezone,
+      detections_subset = subset_detections,
+      summary_metadata_subset = summary_file_metadata[summary_file_metadata$recorder_id == recorder_id, , drop = FALSE],
+      bin_minutes = bin_minutes,
+      timezone = analysis_timezone,
       rolling_mean_window_days = rolling_mean_window_days
     )
     subset_time_series$recorder_id <- recorder_id
     subset_time_series
   })
 )
+time_series_no_data_bands_by_recorder <- do.call(
+  rbind,
+  lapply(recorder_ids, function(recorder_id) {
+    subset_time_series <- time_series_by_recorder[time_series_by_recorder$recorder_id == recorder_id, , drop = FALSE]
+    subset_bands <- build_no_data_bands(subset_time_series, bin_minutes = bin_minutes)
+    if (nrow(subset_bands) == 0) {
+      return(NULL)
+    }
+    subset_bands$recorder_id <- recorder_id
+    subset_bands
+  })
+)
+if (is.null(time_series_no_data_bands_by_recorder)) {
+  time_series_no_data_bands_by_recorder <- data.frame(
+    xmin = as.POSIXct(character()),
+    xmax = as.POSIXct(character()),
+    recorder_id = character(),
+    stringsAsFactors = FALSE
+  )
+}
 
 top_species_time_series_by_recorder <- do.call(
   rbind,
   lapply(recorder_ids, function(recorder_id) {
     subset_detections <- filtered_detections[filtered_detections$recorder_id == recorder_id, , drop = FALSE]
     subset_top_species <- build_top_species_time_series(
-      subset_detections,
+      detections_subset = subset_detections,
+      summary_metadata_subset = summary_file_metadata[summary_file_metadata$recorder_id == recorder_id, , drop = FALSE],
       bin_minutes = top_species_time_bin_minutes,
       top_n = 10L,
       timezone = analysis_timezone
@@ -2963,6 +3289,30 @@ top_species_time_series_by_recorder <- do.call(
     subset_top_species
   })
 )
+top_species_no_data_bands_by_recorder <- do.call(
+  rbind,
+  lapply(recorder_ids, function(recorder_id) {
+    subset_time_bins <- build_available_time_bin_summary(
+      summary_metadata_subset = summary_file_metadata[summary_file_metadata$recorder_id == recorder_id, , drop = FALSE],
+      bin_minutes = top_species_time_bin_minutes,
+      timezone = analysis_timezone
+    )
+    subset_bands <- build_no_data_bands(subset_time_bins, bin_minutes = top_species_time_bin_minutes)
+    if (nrow(subset_bands) == 0) {
+      return(NULL)
+    }
+    subset_bands$recorder_id <- recorder_id
+    subset_bands
+  })
+)
+if (is.null(top_species_no_data_bands_by_recorder)) {
+  top_species_no_data_bands_by_recorder <- data.frame(
+    xmin = as.POSIXct(character()),
+    xmax = as.POSIXct(character()),
+    recorder_id = character(),
+    stringsAsFactors = FALSE
+  )
+}
 top_species_time_series_by_recorder_positive <- top_species_time_series_by_recorder[
   !is.na(top_species_time_series_by_recorder$identification_count_plot),
   ,
@@ -2974,7 +3324,12 @@ cumulative_new_species_by_recorder <- do.call(
   rbind,
   lapply(recorder_ids, function(recorder_id) {
     subset_detections <- filtered_detections[filtered_detections$recorder_id == recorder_id, , drop = FALSE]
-    subset_cumulative <- build_cumulative_new_species_for_subset(subset_detections, bin_minutes, analysis_timezone)
+    subset_cumulative <- build_cumulative_new_species_for_subset(
+      detections_subset = subset_detections,
+      summary_metadata_subset = summary_file_metadata[summary_file_metadata$recorder_id == recorder_id, , drop = FALSE],
+      bin_minutes = bin_minutes,
+      timezone = analysis_timezone
+    )
     subset_cumulative$recorder_id <- recorder_id
     subset_cumulative
   })
@@ -3009,7 +3364,17 @@ species_counts_by_month_by_recorder <- do.call(
   rbind,
   lapply(recorder_ids, function(recorder_id) {
     subset_detections <- filtered_detections[filtered_detections$recorder_id == recorder_id, , drop = FALSE]
-    subset_observed_months <- unique(subset_detections[, c("month_num", "month_label")])
+    subset_metadata <- summary_file_metadata[summary_file_metadata$recorder_id == recorder_id & !is.na(summary_file_metadata$local_date), , drop = FALSE]
+    subset_observed_months <- if (nrow(subset_metadata) > 0) {
+      data.frame(
+        month_num = as.integer(format(subset_metadata$local_date, "%m")),
+        month_label = factor(month.abb[as.integer(format(subset_metadata$local_date, "%m"))], levels = month.abb),
+        stringsAsFactors = FALSE
+      )
+    } else {
+      unique(subset_detections[, c("month_num", "month_label")])
+    }
+    subset_observed_months <- unique(subset_observed_months)
     subset_observed_months <- subset_observed_months[order(subset_observed_months$month_num), , drop = FALSE]
     subset_species_lookup <- species_counts_by_recorder_positive[
       species_counts_by_recorder_positive$recorder_id == recorder_id,
@@ -3202,9 +3567,22 @@ if (nrow(recording_phase_effort) > 0) {
   )
 }
 
+diversity_window_metadata <- build_diversity_window_metadata(
+  summary_metadata = summary_file_metadata,
+  diversity_window_days = diversity_window_days,
+  anchor_date = diversity_anchor_date
+)
+overall_diversity_window_metadata <- build_diversity_window_metadata(
+  summary_metadata = transform(summary_file_metadata, recorder_id = "ALL_RECORDERS"),
+  diversity_window_days = diversity_window_days,
+  anchor_date = diversity_anchor_date
+)
+diversity_no_data_bands <- build_no_data_window_bands(overall_diversity_window_metadata)
+diversity_no_data_bands_by_recorder <- build_no_data_window_bands(diversity_window_metadata, group_columns = "recorder_id")
+
 monthly_diversity_summary <- build_monthly_diversity_summary(
-  filtered_detections,
-  analysis_timezone,
+  filtered_detections = filtered_detections,
+  diversity_window_metadata = diversity_window_metadata,
   diversity_window_days = diversity_window_days
 )
 monthly_diversity_long <- build_monthly_diversity_long(monthly_diversity_summary)
@@ -3213,8 +3591,8 @@ monthly_diversity_long$metric_name <- factor(
   levels = c("Hill number (q = 1)", "Hill number (q = 2)", "Shannon index", "Simpson index")
 )
 monthly_diversity_daily_incidence_summary <- build_monthly_daily_incidence_diversity_summary(
-  filtered_detections,
-  analysis_timezone,
+  filtered_detections = filtered_detections,
+  diversity_window_metadata = diversity_window_metadata,
   diversity_window_days = diversity_window_days
 )
 monthly_diversity_daily_incidence_long <- build_monthly_diversity_long(monthly_diversity_daily_incidence_summary)
@@ -3223,8 +3601,8 @@ monthly_diversity_daily_incidence_long$metric_name <- factor(
   levels = levels(monthly_diversity_long$metric_name)
 )
 overall_monthly_diversity_summary <- build_monthly_diversity_summary(
-  transform(filtered_detections, recorder_id = "ALL_RECORDERS"),
-  analysis_timezone,
+  filtered_detections = transform(filtered_detections, recorder_id = "ALL_RECORDERS"),
+  diversity_window_metadata = overall_diversity_window_metadata,
   diversity_window_days = diversity_window_days
 )
 overall_monthly_diversity_long <- build_monthly_diversity_long(overall_monthly_diversity_summary)
@@ -3233,8 +3611,8 @@ overall_monthly_diversity_long$metric_name <- factor(
   levels = levels(monthly_diversity_long$metric_name)
 )
 overall_monthly_diversity_daily_incidence_summary <- build_monthly_daily_incidence_diversity_summary(
-  transform(filtered_detections, recorder_id = "ALL_RECORDERS"),
-  analysis_timezone,
+  filtered_detections = transform(filtered_detections, recorder_id = "ALL_RECORDERS"),
+  diversity_window_metadata = overall_diversity_window_metadata,
   diversity_window_days = diversity_window_days
 )
 overall_monthly_diversity_daily_incidence_long <- build_monthly_diversity_long(overall_monthly_diversity_daily_incidence_summary)
@@ -3244,12 +3622,31 @@ overall_monthly_diversity_daily_incidence_long$metric_name <- factor(
 )
 monthly_raw_species_richness <- aggregate(
   list(raw_species_richness = filtered_detections$scientific_name),
-  by = list(month_start = filtered_detections$month_start),
+  by = list(
+    diversity_window_start = filtered_detections$diversity_window_start,
+    diversity_window_end = filtered_detections$diversity_window_end,
+    diversity_window_label = filtered_detections$diversity_window_label
+  ),
   FUN = function(x) length(unique(x))
 )
-monthly_raw_species_richness$month_label <- format(monthly_raw_species_richness$month_start, "%Y-%m")
+monthly_raw_species_richness <- merge(
+  overall_diversity_window_metadata,
+  monthly_raw_species_richness,
+  by = c("diversity_window_start", "diversity_window_end", "diversity_window_label"),
+  all.x = TRUE
+)
+monthly_raw_species_richness$raw_species_richness[monthly_raw_species_richness$data_available & is.na(monthly_raw_species_richness$raw_species_richness)] <- 0
+monthly_raw_species_richness$raw_species_richness[!monthly_raw_species_richness$data_available] <- NA_real_
+monthly_raw_species_richness <- monthly_raw_species_richness[, c(
+  "diversity_window_start",
+  "diversity_window_end",
+  "diversity_window_label",
+  "sampled_days",
+  "data_available",
+  "raw_species_richness"
+), drop = FALSE]
 monthly_raw_species_richness <- monthly_raw_species_richness[
-  order(monthly_raw_species_richness$month_start),
+  order(monthly_raw_species_richness$diversity_window_start),
   ,
   drop = FALSE
 ]
@@ -3276,7 +3673,7 @@ light_phase_sampling_effort_csv <- file.path(output_dir, "birdnet_light_phase_sa
 light_phase_sampling_effort_by_recorder_csv <- file.path(output_dir, "birdnet_light_phase_sampling_effort_by_recorder.csv")
 diel_species_csv <- file.path(output_dir, "birdnet_diel_activity_by_species.csv")
 diel_species_by_recorder_csv <- file.path(output_dir, "birdnet_diel_activity_by_species_by_recorder.csv")
-monthly_raw_species_richness_csv <- file.path(output_dir, "birdnet_raw_species_richness_by_month.csv")
+monthly_raw_species_richness_csv <- file.path(output_dir, "birdnet_raw_species_richness_by_diversity_window.csv")
 time_series_csv <- file.path(output_dir, "birdnet_identifications_by_time_bin.csv")
 time_series_by_recorder_csv <- file.path(output_dir, "birdnet_identifications_by_time_bin_by_recorder.csv")
 top_species_time_series_csv <- file.path(output_dir, "birdnet_top_10_species_detections_through_time.csv")
@@ -3356,9 +3753,25 @@ plot_subtitle <- sprintf(
 )
 time_series_plot_subtitle <- paste0(
   plot_subtitle,
-  sprintf(" | red line = %.3g-day running mean", rolling_mean_window_days)
+  sprintf(" | red line = %.3g-day running mean | grey bands = no data", rolling_mean_window_days)
 )
-time_series_plot_linear_subtitle <- plot_subtitle
+time_series_plot_linear_subtitle <- paste0(
+  plot_subtitle,
+  " | grey bands = no data | black points at 0 = data available but no detections"
+)
+diversity_plot_subtitle <- sprintf(
+  "using %s-day analysis windows | grey bands = no data | 0 = sampled window with no detections",
+  diversity_window_days
+)
+top_species_plot_subtitle <- sprintf(
+  "bin size: %s hours | minimum confidence: %.3f | grey bands = no data",
+  round(top_species_time_bin_minutes / 60, 2),
+  min_confidence
+)
+periodicity_plot_subtitle <- paste0(
+  plot_subtitle,
+  " | diagnostics use the longest contiguous available-data segment"
+)
 recorder_reference_locations <- build_recorder_reference_locations(summary_file_metadata)
 overall_light_phase_bands <- build_plot_light_phase_bands(
   reference_locations = recorder_reference_locations,
@@ -3377,6 +3790,13 @@ time_series_plot <- ggplot2::ggplot(
   time_series_summary,
   ggplot2::aes(x = time_bin, y = identification_count_plot)
 ) +
+  ggplot2::geom_rect(
+    data = overall_no_data_bands,
+    ggplot2::aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf),
+    inherit.aes = FALSE,
+    fill = "grey82",
+    alpha = 0.35
+  ) +
   ggplot2::geom_col(fill = "steelblue", alpha = 0.5, width = bin_minutes * 60 * 0.9, na.rm = TRUE) +
   ggplot2::geom_line(
     ggplot2::aes(y = identification_count_running_mean_plot),
@@ -3399,7 +3819,21 @@ time_series_plot_linear <- ggplot2::ggplot(
   ggplot2::aes(x = time_bin, y = identification_count)
 ) +
   light_phase_band_layers(overall_light_phase_bands) +
+  ggplot2::geom_rect(
+    data = overall_no_data_bands,
+    ggplot2::aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf),
+    inherit.aes = FALSE,
+    fill = "grey82",
+    alpha = 0.35
+  ) +
   ggplot2::geom_col(fill = "black", alpha = 0.5, width = bin_minutes * 60 * 0.9) +
+  ggplot2::geom_point(
+    data = time_series_summary[!is.na(time_series_summary$zero_detection_point), , drop = FALSE],
+    ggplot2::aes(x = time_bin, y = zero_detection_point),
+    inherit.aes = FALSE,
+    colour = "black",
+    size = 1.2
+  ) +
   ggplot2::labs(
     title = "BirdNET identifications over time",
     subtitle = time_series_plot_linear_subtitle,
@@ -3412,10 +3846,17 @@ cumulative_species_plot <- ggplot2::ggplot(
   cumulative_new_species,
   ggplot2::aes(x = time_bin, y = cumulative_new_species)
 ) +
+  ggplot2::geom_rect(
+    data = overall_no_data_bands,
+    ggplot2::aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf),
+    inherit.aes = FALSE,
+    fill = "grey82",
+    alpha = 0.35
+  ) +
   ggplot2::geom_step(linewidth = 1.1, colour = "darkgreen") +
   ggplot2::labs(
     title = "cumulative new species detected over time",
-    subtitle = plot_subtitle,
+    subtitle = paste0(plot_subtitle, " | grey bands = no data"),
     x = "time bin",
     y = "cumulative number of new species"
   ) +
@@ -3482,12 +3923,19 @@ monthly_diversity_plot <- ggplot2::ggplot(
   overall_monthly_diversity_long,
   ggplot2::aes(x = diversity_window_start, y = metric_value, group = recorder_id)
 ) +
+  ggplot2::geom_rect(
+    data = diversity_no_data_bands,
+    ggplot2::aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf),
+    inherit.aes = FALSE,
+    fill = "grey82",
+    alpha = 0.35
+  ) +
   ggplot2::geom_line(linewidth = 0.9, colour = "steelblue4") +
   ggplot2::geom_point(size = 2) +
   ggplot2::facet_wrap(~metric_name, scales = "free_y", ncol = 2) +
   ggplot2::labs(
     title = "diversity metrics across all recorders",
-    subtitle = sprintf("detections-as-abundance summary using %s-day analysis windows", diversity_window_days),
+    subtitle = paste("detections-as-abundance summary", diversity_plot_subtitle),
     x = "diversity window start",
     y = "metric value"
   ) +
@@ -3498,12 +3946,19 @@ monthly_diversity_daily_incidence_plot <- ggplot2::ggplot(
   overall_monthly_diversity_daily_incidence_long,
   ggplot2::aes(x = diversity_window_start, y = metric_value, group = recorder_id)
 ) +
+  ggplot2::geom_rect(
+    data = diversity_no_data_bands,
+    ggplot2::aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf),
+    inherit.aes = FALSE,
+    fill = "grey82",
+    alpha = 0.35
+  ) +
   ggplot2::geom_line(linewidth = 0.9, colour = "darkolivegreen4") +
   ggplot2::geom_point(size = 2, colour = "darkolivegreen4") +
   ggplot2::facet_wrap(~metric_name, scales = "free_y", ncol = 2) +
   ggplot2::labs(
     title = "diversity metrics across all recorders",
-    subtitle = sprintf("daily-incidence diversity using %s-day analysis windows", diversity_window_days),
+    subtitle = paste("daily-incidence diversity", diversity_plot_subtitle),
     x = "diversity window start",
     y = "metric value"
   ) +
@@ -3512,14 +3967,24 @@ monthly_diversity_daily_incidence_plot <- ggplot2::ggplot(
 
 monthly_raw_species_richness_plot <- ggplot2::ggplot(
   monthly_raw_species_richness,
-  ggplot2::aes(x = month_start, y = raw_species_richness)
+  ggplot2::aes(x = diversity_window_start, y = raw_species_richness)
 ) +
+  ggplot2::geom_rect(
+    data = diversity_no_data_bands,
+    ggplot2::aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf),
+    inherit.aes = FALSE,
+    fill = "grey82",
+    alpha = 0.35
+  ) +
   ggplot2::geom_line(linewidth = 0.9, colour = "darkgreen") +
   ggplot2::geom_point(size = 2, colour = "darkgreen") +
   ggplot2::labs(
-    title = "raw species richness by month",
-    subtitle = sprintf("unique species detected per calendar month | minimum confidence: %.3f", min_confidence),
-    x = "month",
+    title = "raw species richness by diversity window",
+    subtitle = paste0(
+      sprintf("unique species detected per %s-day analysis window | minimum confidence: %.3f", diversity_window_days, min_confidence),
+      " | grey bands = no data | 0 = sampled window with no detections"
+    ),
+    x = "diversity window start",
     y = "species richness"
   ) +
   ggplot2::scale_x_date(date_labels = "%Y-%m") +
@@ -3529,6 +3994,13 @@ top_species_plot <- ggplot2::ggplot(
   top_species_time_series,
   ggplot2::aes(x = time_bin, y = identification_count_plot, colour = species_label, group = species_label)
 ) +
+  ggplot2::geom_rect(
+    data = top_species_no_data_bands,
+    ggplot2::aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf),
+    inherit.aes = FALSE,
+    fill = "grey82",
+    alpha = 0.35
+  ) +
   ggplot2::geom_line(
     data = top_species_time_series_positive,
     ggplot2::aes(linetype = species_label, linewidth = species_label)
@@ -3545,7 +4017,7 @@ top_species_plot <- ggplot2::ggplot(
   ggplot2::scale_y_log10() +
   ggplot2::labs(
     title = "detections through time for the 10 most detected species",
-    subtitle = sprintf("bin size: %s hours | minimum confidence: %.3f", round(top_species_time_bin_minutes / 60, 2), min_confidence),
+    subtitle = top_species_plot_subtitle,
     x = "time bin",
     y = expression("number of detections (" * log[10] * " scale)"),
     colour = "species"
@@ -3556,6 +4028,13 @@ time_series_by_recorder_plot <- ggplot2::ggplot(
   time_series_by_recorder,
   ggplot2::aes(x = time_bin, y = identification_count_plot)
 ) +
+  ggplot2::geom_rect(
+    data = time_series_no_data_bands_by_recorder,
+    ggplot2::aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf),
+    inherit.aes = FALSE,
+    fill = "grey82",
+    alpha = 0.35
+  ) +
   ggplot2::geom_col(fill = "steelblue", alpha = 0.5, width = bin_minutes * 60 * 0.9, na.rm = TRUE) +
   ggplot2::geom_line(
     ggplot2::aes(y = identification_count_running_mean_plot),
@@ -3579,7 +4058,21 @@ time_series_by_recorder_plot_linear <- ggplot2::ggplot(
   ggplot2::aes(x = time_bin, y = identification_count)
 ) +
   light_phase_band_layers(by_recorder_light_phase_bands) +
+  ggplot2::geom_rect(
+    data = time_series_no_data_bands_by_recorder,
+    ggplot2::aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf),
+    inherit.aes = FALSE,
+    fill = "grey82",
+    alpha = 0.35
+  ) +
   ggplot2::geom_col(fill = "black", alpha = 0.5, width = bin_minutes * 60 * 0.9) +
+  ggplot2::geom_point(
+    data = time_series_by_recorder[!is.na(time_series_by_recorder$zero_detection_point), , drop = FALSE],
+    ggplot2::aes(x = time_bin, y = zero_detection_point),
+    inherit.aes = FALSE,
+    colour = "black",
+    size = 1.1
+  ) +
   ggplot2::facet_grid(recorder_id ~ ., scales = "free_y") +
   ggplot2::labs(
     title = "BirdNET identifications over time by recorder",
@@ -3593,11 +4086,18 @@ cumulative_species_by_recorder_plot <- ggplot2::ggplot(
   cumulative_new_species_by_recorder,
   ggplot2::aes(x = time_bin, y = cumulative_new_species)
 ) +
+  ggplot2::geom_rect(
+    data = time_series_no_data_bands_by_recorder,
+    ggplot2::aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf),
+    inherit.aes = FALSE,
+    fill = "grey82",
+    alpha = 0.35
+  ) +
   ggplot2::geom_step(linewidth = 1.1, colour = "darkgreen") +
   ggplot2::facet_grid(recorder_id ~ ., scales = "free_y") +
   ggplot2::labs(
     title = "cumulative new species detected over time by recorder",
-    subtitle = plot_subtitle,
+    subtitle = paste0(plot_subtitle, " | grey bands = no data"),
     x = "time bin",
     y = "cumulative number of new species"
   ) +
@@ -3669,6 +4169,13 @@ monthly_diversity_by_recorder_plot <- ggplot2::ggplot(
   monthly_diversity_long,
   ggplot2::aes(x = diversity_window_start, y = metric_value, group = 1)
 ) +
+  ggplot2::geom_rect(
+    data = diversity_no_data_bands_by_recorder,
+    ggplot2::aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf),
+    inherit.aes = FALSE,
+    fill = "grey82",
+    alpha = 0.35
+  ) +
   ggplot2::geom_line(linewidth = 0.9, colour = "steelblue4") +
   ggplot2::geom_point(size = 1.8, colour = "steelblue4") +
   ggplot2::facet_wrap(
@@ -3678,7 +4185,7 @@ monthly_diversity_by_recorder_plot <- ggplot2::ggplot(
   ) +
   ggplot2::labs(
     title = "diversity metrics by recorder",
-    subtitle = sprintf("detections-as-abundance summary using %s-day analysis windows", diversity_window_days),
+    subtitle = paste("detections-as-abundance summary", diversity_plot_subtitle),
     x = "diversity window start",
     y = "metric value"
   ) +
@@ -3689,6 +4196,13 @@ monthly_diversity_daily_incidence_by_recorder_plot <- ggplot2::ggplot(
   monthly_diversity_daily_incidence_long,
   ggplot2::aes(x = diversity_window_start, y = metric_value, group = 1)
 ) +
+  ggplot2::geom_rect(
+    data = diversity_no_data_bands_by_recorder,
+    ggplot2::aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf),
+    inherit.aes = FALSE,
+    fill = "grey82",
+    alpha = 0.35
+  ) +
   ggplot2::geom_line(linewidth = 0.9, colour = "darkolivegreen4") +
   ggplot2::geom_point(size = 1.8, colour = "darkolivegreen4") +
   ggplot2::facet_wrap(
@@ -3698,7 +4212,7 @@ monthly_diversity_daily_incidence_by_recorder_plot <- ggplot2::ggplot(
   ) +
   ggplot2::labs(
     title = "diversity metrics by recorder",
-    subtitle = sprintf("daily-incidence diversity using %s-day analysis windows", diversity_window_days),
+    subtitle = paste("daily-incidence diversity", diversity_plot_subtitle),
     x = "diversity window start",
     y = "metric value"
   ) +
@@ -3709,6 +4223,13 @@ top_species_by_recorder_plot <- ggplot2::ggplot(
   top_species_time_series_by_recorder,
   ggplot2::aes(x = time_bin, y = identification_count_plot, colour = species_label, group = species_label)
 ) +
+  ggplot2::geom_rect(
+    data = top_species_no_data_bands_by_recorder,
+    ggplot2::aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf),
+    inherit.aes = FALSE,
+    fill = "grey82",
+    alpha = 0.35
+  ) +
   ggplot2::geom_line(
     data = top_species_time_series_by_recorder_positive,
     ggplot2::aes(linetype = species_label, linewidth = species_label)
@@ -3726,7 +4247,7 @@ top_species_by_recorder_plot <- ggplot2::ggplot(
   ggplot2::scale_y_log10() +
   ggplot2::labs(
     title = "detections through time for the 10 most detected species by recorder",
-    subtitle = sprintf("bin size: %s hours | minimum confidence: %.3f", round(top_species_time_bin_minutes / 60, 2), min_confidence),
+    subtitle = top_species_plot_subtitle,
     x = "time bin",
     y = expression("number of detections (" * log[10] * " scale)"),
     colour = "species"
@@ -3844,7 +4365,7 @@ periodicity_plot <- build_temporal_diagnostics_plot(
   diagnostics_df = temporal_diagnostics,
   peaks_df = temporal_peaks,
   title_text = "temporal periodicity diagnostics for detections and species richness",
-  subtitle_text = plot_subtitle,
+  subtitle_text = periodicity_plot_subtitle,
   facet_column = "facet_label",
   ncol = 2,
   placeholder_text = paste(
@@ -3870,7 +4391,7 @@ periodicity_by_recorder_plot <- build_temporal_diagnostics_plot(
   diagnostics_df = temporal_diagnostics_by_recorder,
   peaks_df = temporal_peaks_by_recorder,
   title_text = "temporal periodicity diagnostics by recorder",
-  subtitle_text = plot_subtitle,
+  subtitle_text = periodicity_plot_subtitle,
   facet_column = "facet_label",
   ncol = 2,
   placeholder_text = paste(
@@ -3958,7 +4479,7 @@ ggplot2::ggsave(
   dpi = 150
 )
 ggplot2::ggsave(
-  filename = file.path(output_dir, "birdnet_raw_species_richness_by_month.png"),
+  filename = file.path(output_dir, "birdnet_raw_species_richness_by_diversity_window.png"),
   plot = monthly_raw_species_richness_plot,
   width = 12,
   height = 7,
@@ -4098,6 +4619,21 @@ for (recorder_id in recorder_ids) {
   recorder_top_species_label_parser <- build_species_label_parser(recorder_top_species_lookup)
   recorder_top_species_style <- top_species_style_values(recorder_top_species_levels)
   recorder_top_species$species_label <- factor(as.character(recorder_top_species$species_label), levels = recorder_top_species_levels)
+  recorder_no_data_bands <- time_series_no_data_bands_by_recorder[
+    time_series_no_data_bands_by_recorder$recorder_id == recorder_id,
+    ,
+    drop = FALSE
+  ]
+  recorder_top_species_no_data_bands <- top_species_no_data_bands_by_recorder[
+    top_species_no_data_bands_by_recorder$recorder_id == recorder_id,
+    ,
+    drop = FALSE
+  ]
+  recorder_diversity_no_data_bands <- diversity_no_data_bands_by_recorder[
+    diversity_no_data_bands_by_recorder$recorder_id == recorder_id,
+    ,
+    drop = FALSE
+  ]
   recorder_light_phase_bands <- by_recorder_light_phase_bands[
     by_recorder_light_phase_bands$recorder_id == recorder_id,
     ,
@@ -4121,6 +4657,13 @@ for (recorder_id in recorder_ids) {
     recorder_time_series,
     ggplot2::aes(x = time_bin, y = identification_count_plot)
   ) +
+    ggplot2::geom_rect(
+      data = recorder_no_data_bands,
+      ggplot2::aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf),
+      inherit.aes = FALSE,
+      fill = "grey82",
+      alpha = 0.35
+    ) +
     ggplot2::geom_col(fill = "black", width = bin_minutes * 60 * 0.9, na.rm = TRUE) +
     ggplot2::geom_line(
       ggplot2::aes(y = identification_count_running_mean_plot),
@@ -4143,7 +4686,21 @@ for (recorder_id in recorder_ids) {
     ggplot2::aes(x = time_bin, y = identification_count)
   ) +
     light_phase_band_layers(recorder_light_phase_bands) +
+    ggplot2::geom_rect(
+      data = recorder_no_data_bands,
+      ggplot2::aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf),
+      inherit.aes = FALSE,
+      fill = "grey82",
+      alpha = 0.35
+    ) +
     ggplot2::geom_col(fill = "black", width = bin_minutes * 60 * 0.9) +
+    ggplot2::geom_point(
+      data = recorder_time_series[!is.na(recorder_time_series$zero_detection_point), , drop = FALSE],
+      ggplot2::aes(x = time_bin, y = zero_detection_point),
+      inherit.aes = FALSE,
+      colour = "black",
+      size = 1.1
+    ) +
     ggplot2::labs(
       title = sprintf("BirdNET identifications over time: %s", recorder_id),
       subtitle = time_series_plot_linear_subtitle,
@@ -4156,10 +4713,17 @@ for (recorder_id in recorder_ids) {
     recorder_cumulative,
     ggplot2::aes(x = time_bin, y = cumulative_new_species)
   ) +
+    ggplot2::geom_rect(
+      data = recorder_no_data_bands,
+      ggplot2::aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf),
+      inherit.aes = FALSE,
+      fill = "grey82",
+      alpha = 0.35
+    ) +
     ggplot2::geom_step(linewidth = 1.1, colour = "darkgreen") +
     ggplot2::labs(
       title = sprintf("cumulative new species detected over time: %s", recorder_id),
-      subtitle = plot_subtitle,
+      subtitle = paste0(plot_subtitle, " | grey bands = no data"),
       x = "time bin",
       y = "cumulative number of new species"
     ) +
@@ -4226,12 +4790,19 @@ for (recorder_id in recorder_ids) {
     recorder_diversity_long,
     ggplot2::aes(x = diversity_window_start, y = metric_value, group = 1)
   ) +
+    ggplot2::geom_rect(
+      data = recorder_diversity_no_data_bands,
+      ggplot2::aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf),
+      inherit.aes = FALSE,
+      fill = "grey82",
+      alpha = 0.35
+    ) +
     ggplot2::geom_line(linewidth = 0.9, colour = "steelblue4") +
     ggplot2::geom_point(size = 2, colour = "steelblue4") +
     ggplot2::facet_wrap(~metric_name, scales = "free_y", ncol = 2) +
     ggplot2::labs(
       title = sprintf("diversity metrics: %s", recorder_id),
-      subtitle = sprintf("detections-as-abundance summary using %s-day analysis windows", diversity_window_days),
+      subtitle = paste("detections-as-abundance summary", diversity_plot_subtitle),
       x = "diversity window start",
       y = "metric value"
     ) +
@@ -4242,6 +4813,13 @@ for (recorder_id in recorder_ids) {
     recorder_top_species,
     ggplot2::aes(x = time_bin, y = identification_count_plot, colour = species_label, group = species_label)
   ) +
+    ggplot2::geom_rect(
+      data = recorder_top_species_no_data_bands,
+      ggplot2::aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf),
+      inherit.aes = FALSE,
+      fill = "grey82",
+      alpha = 0.35
+    ) +
     ggplot2::geom_line(
       data = recorder_top_species[!is.na(recorder_top_species$identification_count_plot), , drop = FALSE],
       ggplot2::aes(linetype = species_label, linewidth = species_label)
@@ -4258,7 +4836,7 @@ for (recorder_id in recorder_ids) {
     ggplot2::scale_y_log10() +
     ggplot2::labs(
       title = sprintf("detections through time for the 10 most detected species: %s", recorder_id),
-      subtitle = sprintf("bin size: %s hours | minimum confidence: %.3f", round(top_species_time_bin_minutes / 60, 2), min_confidence),
+      subtitle = top_species_plot_subtitle,
       x = "time bin",
       y = expression("number of detections (" * log[10] * " scale)"),
       colour = "species"
@@ -4279,7 +4857,7 @@ for (recorder_id in recorder_ids) {
     diagnostics_df = recorder_temporal_diagnostics,
     peaks_df = recorder_temporal_peaks,
     title_text = sprintf("temporal periodicity diagnostics: %s", recorder_id),
-    subtitle_text = plot_subtitle,
+    subtitle_text = periodicity_plot_subtitle,
     facet_column = "facet_label",
     ncol = 2,
     placeholder_text = paste(
