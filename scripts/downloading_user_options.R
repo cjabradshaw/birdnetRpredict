@@ -6,8 +6,12 @@ archive_file <- "/Volumes/bradshaw/acoustic/GEL_A/GEL_A202508202025_12312025.tar
 ecosounds_workbench_url <- "https://api.ecosounds.org"
 ecosounds_project_id <- 1281L
 
-# EcoSounds site/recorder ID; GEL_A is project 1281 site 7238;
-# GEL_B is site 7239; GEL_C is site 7240; GEL_D is site 7241; GEL_E is site 7242
+# EcoSounds site/recorder ID
+# GEL_A is project 1281 site 7238;
+# GEL_B is site 7239
+# GEL_C is site 7240
+# GEL_D is site 7241
+# GEL_E is site 7242
 ecosounds_recorder_id <- 7238L
 ecosounds_recorder_name <- ""  # exact EcoSounds site/recorder name; use this instead of ecosounds_recorder_id if preferred
 ecosounds_download_method <- "api_then_powershell"  # "api", "powershell", or "api_then_powershell"

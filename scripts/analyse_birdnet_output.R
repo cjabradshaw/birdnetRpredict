@@ -1,7 +1,7 @@
 # user-defined settings ----------------------------------------------------
 analysis_timezone <- "Australia/Adelaide"
 bin_minutes <- 60
-diversity_window_days <- 14L
+diversity_window_days <- 28L
 top_species_time_bin_minutes <- 4 * 7 * 24 * 60
 rolling_mean_window_days <- 14
 min_confidence <- 0.1
@@ -3235,6 +3235,10 @@ top_species_label_parser <- build_species_label_parser(species_label_plotmath_lo
 top_species_style <- top_species_style_values(levels(top_species_time_series$species_label))
 
 recorder_ids <- sort(unique(filtered_detections$recorder_id))
+recorder_colour_values <- stats::setNames(
+  grDevices::hcl.colors(length(recorder_ids), palette = "Dark 3"),
+  recorder_ids
+)
 recorder_output_root <- file.path(output_dir, "recorders")
 dir.create(recorder_output_root, recursive = TRUE, showWarnings = FALSE)
 
@@ -3757,7 +3761,7 @@ time_series_plot_subtitle <- paste0(
 )
 time_series_plot_linear_subtitle <- paste0(
   plot_subtitle,
-  " | grey bands = no data | black points at 0 = data available but no detections"
+  " | grey bands = no data | red dots at 0 = data available but no detections"
 )
 diversity_plot_subtitle <- sprintf(
   "using %s-day analysis windows | grey bands = no data | 0 = sampled window with no detections",
@@ -3771,6 +3775,47 @@ top_species_plot_subtitle <- sprintf(
 periodicity_plot_subtitle <- paste0(
   plot_subtitle,
   " | diagnostics use the longest contiguous available-data segment"
+)
+recorder_comparison_time_series <- time_series_by_recorder[
+  !is.na(time_series_by_recorder$identification_count_running_mean_plot),
+  c("time_bin", "recorder_id", "identification_count_running_mean_plot"),
+  drop = FALSE
+]
+recorder_comparison_time_series$recorder_id <- factor(
+  recorder_comparison_time_series$recorder_id,
+  levels = recorder_ids
+)
+recorder_comparison_cumulative <- cumulative_new_species_by_recorder[
+  ,
+  c("time_bin", "recorder_id", "data_available", "cumulative_new_species"),
+  drop = FALSE
+]
+recorder_comparison_cumulative$cumulative_new_species_plot <- ifelse(
+  recorder_comparison_cumulative$data_available,
+  recorder_comparison_cumulative$cumulative_new_species,
+  NA_real_
+)
+recorder_comparison_cumulative$recorder_id <- factor(
+  recorder_comparison_cumulative$recorder_id,
+  levels = recorder_ids
+)
+recorder_comparison_total_diversity <- monthly_diversity_summary[
+  ,
+  c("diversity_window_start", "recorder_id", "hill_q1"),
+  drop = FALSE
+]
+recorder_comparison_total_diversity$recorder_id <- factor(
+  recorder_comparison_total_diversity$recorder_id,
+  levels = recorder_ids
+)
+recorder_comparison_hill_q2 <- monthly_diversity_summary[
+  ,
+  c("diversity_window_start", "recorder_id", "hill_q2"),
+  drop = FALSE
+]
+recorder_comparison_hill_q2$recorder_id <- factor(
+  recorder_comparison_hill_q2$recorder_id,
+  levels = recorder_ids
 )
 recorder_reference_locations <- build_recorder_reference_locations(summary_file_metadata)
 overall_light_phase_bands <- build_plot_light_phase_bands(
@@ -3831,7 +3876,7 @@ time_series_plot_linear <- ggplot2::ggplot(
     data = time_series_summary[!is.na(time_series_summary$zero_detection_point), , drop = FALSE],
     ggplot2::aes(x = time_bin, y = zero_detection_point),
     inherit.aes = FALSE,
-    colour = "black",
+    colour = "red",
     size = 0.9
   ) +
   ggplot2::labs(
@@ -3861,6 +3906,104 @@ cumulative_species_plot <- ggplot2::ggplot(
     y = "cumulative number of new species"
   ) +
   analysis_plot_theme()
+
+time_series_recorder_comparison_plot <- ggplot2::ggplot(
+  recorder_comparison_time_series,
+  ggplot2::aes(
+    x = time_bin,
+    y = identification_count_running_mean_plot,
+    colour = recorder_id,
+    group = recorder_id
+  )
+) +
+  ggplot2::geom_line(linewidth = 1) +
+  ggplot2::scale_colour_manual(values = recorder_colour_values, drop = FALSE) +
+  ggplot2::labs(
+    title = "BirdNET identifications over time by recorder",
+    subtitle = sprintf(
+      "comparison of %.3g-day running means | gaps indicate no data | minimum confidence: %.3f",
+      rolling_mean_window_days,
+      min_confidence
+    ),
+    x = "time bin",
+    y = "identifications per bin running mean",
+    colour = "recorder"
+  ) +
+  analysis_plot_theme() +
+  ggplot2::theme(legend.position = "top")
+
+cumulative_species_recorder_comparison_plot <- ggplot2::ggplot(
+  recorder_comparison_cumulative,
+  ggplot2::aes(
+    x = time_bin,
+    y = cumulative_new_species_plot,
+    colour = recorder_id,
+    group = recorder_id
+  )
+) +
+  ggplot2::geom_step(linewidth = 1) +
+  ggplot2::scale_colour_manual(values = recorder_colour_values, drop = FALSE) +
+  ggplot2::labs(
+    title = "cumulative new species detected over time by recorder",
+    subtitle = "comparison across recorders | gaps indicate no data",
+    x = "time bin",
+    y = "cumulative number of new species",
+    colour = "recorder"
+  ) +
+  analysis_plot_theme() +
+  ggplot2::theme(legend.position = "top")
+
+total_diversity_recorder_comparison_plot <- ggplot2::ggplot(
+  recorder_comparison_total_diversity,
+  ggplot2::aes(
+    x = diversity_window_start,
+    y = hill_q1,
+    colour = recorder_id,
+    group = recorder_id
+  )
+) +
+  ggplot2::geom_line(linewidth = 1) +
+  ggplot2::geom_point(size = 2) +
+  ggplot2::scale_colour_manual(values = recorder_colour_values, drop = FALSE) +
+  ggplot2::labs(
+    title = "total diversity over time by recorder",
+    subtitle = sprintf(
+      "Hill number (q = 1) comparison using %s-day analysis windows | gaps indicate no data",
+      diversity_window_days
+    ),
+    x = "diversity window start",
+    y = "Hill number (q = 1)",
+    colour = "recorder"
+  ) +
+  ggplot2::scale_x_date(date_labels = "%Y-%m") +
+  analysis_plot_theme() +
+  ggplot2::theme(legend.position = "top")
+
+hill_q2_recorder_comparison_plot <- ggplot2::ggplot(
+  recorder_comparison_hill_q2,
+  ggplot2::aes(
+    x = diversity_window_start,
+    y = hill_q2,
+    colour = recorder_id,
+    group = recorder_id
+  )
+) +
+  ggplot2::geom_line(linewidth = 1) +
+  ggplot2::geom_point(size = 2) +
+  ggplot2::scale_colour_manual(values = recorder_colour_values, drop = FALSE) +
+  ggplot2::labs(
+    title = "Hill number (q = 2) over time by recorder",
+    subtitle = sprintf(
+      "comparison using %s-day analysis windows | gaps indicate no data",
+      diversity_window_days
+    ),
+    x = "diversity window start",
+    y = "Hill number (q = 2)",
+    colour = "recorder"
+  ) +
+  ggplot2::scale_x_date(date_labels = "%Y-%m") +
+  analysis_plot_theme() +
+  ggplot2::theme(legend.position = "top")
 
 species_counts_plot <- ggplot2::ggplot(
   species_counts,
@@ -4070,7 +4213,7 @@ time_series_by_recorder_plot_linear <- ggplot2::ggplot(
     data = time_series_by_recorder[!is.na(time_series_by_recorder$zero_detection_point), , drop = FALSE],
     ggplot2::aes(x = time_bin, y = zero_detection_point),
     inherit.aes = FALSE,
-    colour = "black",
+    colour = "red",
     size = 0.9
   ) +
   ggplot2::facet_grid(recorder_id ~ ., scales = "free_y") +
@@ -4414,20 +4557,25 @@ if (isTRUE(show_plots_in_session) && interactive()) {
   print(monthly_diversity_plot)
   print(monthly_diversity_daily_incidence_plot)
   print(monthly_raw_species_richness_plot)
+  print(time_series_recorder_comparison_plot)
+  print(cumulative_species_recorder_comparison_plot)
+  print(total_diversity_recorder_comparison_plot)
+  print(hill_q2_recorder_comparison_plot)
   print(top_species_plot)
   print(diel_activity_heatmap_plot)
   print(diel_preference_plot)
-  print(time_series_by_recorder_plot)
-  print(time_series_by_recorder_plot_linear)
-  print(top_species_by_recorder_plot)
-  print(cumulative_species_by_recorder_plot)
-  print(species_counts_by_recorder_plot)
-  print(species_counts_by_month_by_recorder_plot)
-  print(monthly_diversity_by_recorder_plot)
-  print(monthly_diversity_daily_incidence_by_recorder_plot)
   print(periodicity_plot)
-  print(periodicity_by_recorder_plot)
 }
+
+separate_recorder_plot_paths <- c(
+  file.path(output_dir, "birdnet_identifications_over_time_by_recorder.png"),
+  file.path(output_dir, "birdnet_identifications_over_time_by_recorder_linear.png"),
+  file.path(output_dir, "birdnet_identifications_by_species_by_recorder.png"),
+  file.path(output_dir, "birdnet_identifications_by_species_by_month_by_recorder.png"),
+  file.path(output_dir, "birdnet_monthly_diversity_metrics_by_recorder.png"),
+  file.path(output_dir, "birdnet_periodicity_by_recorder.png")
+)
+unlink(separate_recorder_plot_paths)
 
 ggplot2::ggsave(
   filename = file.path(output_dir, "birdnet_identifications_over_time.png"),
@@ -4486,6 +4634,34 @@ ggplot2::ggsave(
   dpi = 150
 )
 ggplot2::ggsave(
+  filename = file.path(output_dir, "birdnet_identifications_over_time_recorder_comparison.png"),
+  plot = time_series_recorder_comparison_plot,
+  width = 14,
+  height = 7,
+  dpi = 150
+)
+ggplot2::ggsave(
+  filename = file.path(output_dir, "birdnet_cumulative_new_species_recorder_comparison.png"),
+  plot = cumulative_species_recorder_comparison_plot,
+  width = 14,
+  height = 7,
+  dpi = 150
+)
+ggplot2::ggsave(
+  filename = file.path(output_dir, "birdnet_total_diversity_recorder_comparison.png"),
+  plot = total_diversity_recorder_comparison_plot,
+  width = 14,
+  height = 7,
+  dpi = 150
+)
+ggplot2::ggsave(
+  filename = file.path(output_dir, "birdnet_hill_q2_recorder_comparison.png"),
+  plot = hill_q2_recorder_comparison_plot,
+  width = 14,
+  height = 7,
+  dpi = 150
+)
+ggplot2::ggsave(
   filename = file.path(output_dir, "birdnet_top_10_species_detections_through_time.png"),
   plot = top_species_plot,
   width = 14,
@@ -4507,20 +4683,6 @@ ggplot2::ggsave(
   dpi = 150
 )
 ggplot2::ggsave(
-  filename = file.path(output_dir, "birdnet_identifications_over_time_by_recorder.png"),
-  plot = time_series_by_recorder_plot,
-  width = 14,
-  height = max(7, 3 * length(recorder_ids)),
-  dpi = 150
-)
-ggplot2::ggsave(
-  filename = file.path(output_dir, "birdnet_identifications_over_time_by_recorder_linear.png"),
-  plot = time_series_by_recorder_plot_linear,
-  width = 14,
-  height = max(7, 3 * length(recorder_ids)),
-  dpi = 150
-)
-ggplot2::ggsave(
   filename = file.path(output_dir, "birdnet_top_10_species_detections_through_time_by_recorder.png"),
   plot = top_species_by_recorder_plot,
   width = 15,
@@ -4535,38 +4697,10 @@ ggplot2::ggsave(
   dpi = 150
 )
 ggplot2::ggsave(
-  filename = file.path(output_dir, "birdnet_identifications_by_species_by_recorder.png"),
-  plot = species_counts_by_recorder_plot,
-  width = 14,
-  height = max(10, 3 * length(recorder_ids)),
-  dpi = 150
-)
-ggplot2::ggsave(
-  filename = file.path(output_dir, "birdnet_identifications_by_species_by_month_by_recorder.png"),
-  plot = species_counts_by_month_by_recorder_plot,
-  width = max(16, 3 * length(unique(species_counts_by_month_by_recorder$month_label))),
-  height = max(12, 3 * length(recorder_ids)),
-  dpi = 150
-)
-ggplot2::ggsave(
-  filename = file.path(output_dir, "birdnet_monthly_diversity_metrics_by_recorder.png"),
-  plot = monthly_diversity_by_recorder_plot,
-  width = 16,
-  height = max(8, 2.8 * length(recorder_ids)),
-  dpi = 150
-)
-ggplot2::ggsave(
   filename = file.path(output_dir, "birdnet_periodicity.png"),
   plot = periodicity_plot,
   width = 15,
   height = 11,
-  dpi = 150
-)
-ggplot2::ggsave(
-  filename = file.path(output_dir, "birdnet_periodicity_by_recorder.png"),
-  plot = periodicity_by_recorder_plot,
-  width = 16,
-  height = max(10, 4.2 * length(recorder_ids)),
   dpi = 150
 )
 
@@ -4599,6 +4733,11 @@ for (recorder_id in recorder_ids) {
   recorder_species_by_month_positive$species_label <- factor(as.character(recorder_species_by_month_positive$species_label), levels = recorder_species_levels)
 
   recorder_diversity_long <- monthly_diversity_long[monthly_diversity_long$recorder_id == recorder_id, , drop = FALSE]
+  recorder_daily_incidence_diversity_long <- monthly_diversity_daily_incidence_long[
+    monthly_diversity_daily_incidence_long$recorder_id == recorder_id,
+    ,
+    drop = FALSE
+  ]
   recorder_temporal_diagnostics <- temporal_diagnostics_by_recorder[
     temporal_diagnostics_by_recorder$recorder_id == recorder_id,
     ,
@@ -4698,7 +4837,7 @@ for (recorder_id in recorder_ids) {
       data = recorder_time_series[!is.na(recorder_time_series$zero_detection_point), , drop = FALSE],
       ggplot2::aes(x = time_bin, y = zero_detection_point),
       inherit.aes = FALSE,
-      colour = "black",
+      colour = "red",
       size = 0.9
     ) +
     ggplot2::labs(
@@ -4809,6 +4948,29 @@ for (recorder_id in recorder_ids) {
     ggplot2::scale_x_date(date_labels = "%Y-%m") +
     analysis_plot_theme()
 
+  recorder_daily_incidence_diversity_plot <- ggplot2::ggplot(
+    recorder_daily_incidence_diversity_long,
+    ggplot2::aes(x = diversity_window_start, y = metric_value, group = 1)
+  ) +
+    ggplot2::geom_rect(
+      data = recorder_diversity_no_data_bands,
+      ggplot2::aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf),
+      inherit.aes = FALSE,
+      fill = "grey82",
+      alpha = 0.35
+    ) +
+    ggplot2::geom_line(linewidth = 0.9, colour = "darkolivegreen4") +
+    ggplot2::geom_point(size = 2, colour = "darkolivegreen4") +
+    ggplot2::facet_wrap(~metric_name, scales = "free_y", ncol = 2) +
+    ggplot2::labs(
+      title = sprintf("daily-incidence diversity metrics: %s", recorder_id),
+      subtitle = paste("daily-incidence diversity", diversity_plot_subtitle),
+      x = "diversity window start",
+      y = "metric value"
+    ) +
+    ggplot2::scale_x_date(date_labels = "%Y-%m") +
+    analysis_plot_theme()
+
   recorder_top_species_plot <- ggplot2::ggplot(
     recorder_top_species,
     ggplot2::aes(x = time_bin, y = identification_count_plot, colour = species_label, group = species_label)
@@ -4867,13 +5029,25 @@ for (recorder_id in recorder_ids) {
     )
   )
 
+  if (isTRUE(show_plots_in_session) && interactive()) {
+    print(recorder_time_series_plot)
+    print(recorder_time_series_plot_linear)
+    print(recorder_cumulative_plot)
+    print(recorder_species_plot)
+    print(recorder_species_by_month_plot)
+    print(recorder_diversity_plot)
+    print(recorder_daily_incidence_diversity_plot)
+    print(recorder_top_species_plot)
+    print(recorder_periodicity_plot)
+  }
+
   ggplot2::ggsave(file.path(recorder_dir, "birdnet_identifications_over_time.png"), recorder_time_series_plot, width = 12, height = 7, dpi = 150)
   ggplot2::ggsave(file.path(recorder_dir, "birdnet_identifications_over_time_linear.png"), recorder_time_series_plot_linear, width = 12, height = 7, dpi = 150)
   ggplot2::ggsave(file.path(recorder_dir, "birdnet_cumulative_new_species.png"), recorder_cumulative_plot, width = 12, height = 7, dpi = 150)
   ggplot2::ggsave(file.path(recorder_dir, "birdnet_identifications_by_species.png"), recorder_species_plot, width = 13, height = 10, dpi = 150)
   ggplot2::ggsave(file.path(recorder_dir, "birdnet_identifications_by_species_by_month.png"), recorder_species_by_month_plot, width = 16, height = 12, dpi = 150)
   ggplot2::ggsave(file.path(recorder_dir, "birdnet_monthly_diversity_metrics.png"), recorder_diversity_plot, width = 14, height = 10, dpi = 150)
-  ggplot2::ggsave(file.path(recorder_dir, "birdnet_monthly_diversity_metrics_daily_incidence.png"), monthly_diversity_daily_incidence_by_recorder_plot, width = 14, height = 10, dpi = 150)
+  ggplot2::ggsave(file.path(recorder_dir, "birdnet_monthly_diversity_metrics_daily_incidence.png"), recorder_daily_incidence_diversity_plot, width = 14, height = 10, dpi = 150)
   ggplot2::ggsave(file.path(recorder_dir, "birdnet_top_10_species_detections_through_time.png"), recorder_top_species_plot, width = 14, height = 8, dpi = 150)
   ggplot2::ggsave(file.path(recorder_dir, "birdnet_periodicity.png"), recorder_periodicity_plot, width = 15, height = 11, dpi = 150)
 }

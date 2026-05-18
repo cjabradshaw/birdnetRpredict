@@ -441,24 +441,21 @@ The analysis workflow writes:
 - `birdnet_monthly_diversity_metrics.png`
 - `birdnet_monthly_diversity_metrics_daily_incidence.png`
 - `birdnet_raw_species_richness_by_diversity_window.png`
+- `birdnet_identifications_over_time_recorder_comparison.png`
+- `birdnet_cumulative_new_species_recorder_comparison.png`
+- `birdnet_total_diversity_recorder_comparison.png`
+- `birdnet_hill_q2_recorder_comparison.png`
 - `birdnet_periodicity.png`  
   overall temporal-diagnostics figure combining all recorders currently present in the analysis, with ACF, PACF, and spectral-density panels for detections and unique species
 
-- `birdnet_identifications_over_time_by_recorder.png`
-- `birdnet_identifications_over_time_by_recorder_linear.png`
 - `birdnet_top_10_species_detections_through_time_by_recorder.png`
 - `birdnet_cumulative_new_species_by_recorder.png`
-- `birdnet_identifications_by_species_by_recorder.png`
-- `birdnet_identifications_by_species_by_month_by_recorder.png`
-- `birdnet_monthly_diversity_metrics_by_recorder.png`
-- `birdnet_periodicity_by_recorder.png`  
-  multi-panel recorder-comparison temporal-diagnostics figure with detection and species-richness periodicity panels
 
 - `recorders/<RECORDER_ID>/...`  
-  recorder-specific figures written for each recorder that currently has usable detections (for example `recorders/GEL_A/`)
+  recorder-specific figures written for each recorder that currently has usable detections (for example `recorders/GEL_A/`). Crowded recorder-level figures such as detections through time, identifications by species, identifications by species by month, diversity metrics, and temporal periodicity diagnostics are now written only here as separate recorder-specific figures rather than root-level multi-panel comparisons.
 
 In the species-frequency plots, the identification axis is shown on a log<sub>10</sub> scale, and common names are displayed in lowercase except where proper nouns remain capitalised. Latin names are italicised in the species-axis labels.
-The root-level analysis figures are the combined overall results across all recorders currently present in `out/`. Additional recorder-comparison figures are written as multi-panel plots, and recorder-specific figures are written into the `recorders/` subdirectory as each recorder becomes available.
+The root-level analysis figures are the combined overall results across all recorders currently present in `out/`. A small set of simplified recorder-comparison plots is also written at the root level for direct cross-recorder comparison, while recorder-specific figures are written into the `recorders/` subdirectory as each recorder becomes available.
 The detections-over-time plots now include two versions: a log<sub>10</sub>-scale plot with black bars and a red trailing running mean controlled by `rolling_mean_window_days`, and a separate linear-scale plot with black bars only and no running mean. The linear-scale versions include low-alpha background bands showing local morning twilight (pink), daylight (yellow), evening twilight (pink), and night (dark blue).
 The count-based diversity metrics treat the number of detections per species as the abundance proxy for Shannon, Simpson, and Hill-number calculations, and are produced across user-defined diversity windows set with `diversity_window_days`. A parallel daily-incidence diversity summary is also written, and raw species richness is summarized across those same diversity windows in a separate plot/table.
 The top-species time-series plots default to 24-hour bins through `top_species_time_bin_minutes <- 24 × 60`, but that bin size can be changed directly in `scripts/analyse_birdnet_output.R`.
