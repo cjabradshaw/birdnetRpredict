@@ -144,6 +144,36 @@ read_summary_csv <- function(summary_csv) {
   )
 }
 
+read_non_native_species_lookup <- function(lookup_csv) {
+  if (!file.exists(lookup_csv)) {
+    stop(sprintf("non-native species lookup not found: %s", lookup_csv))
+  }
+
+  lookup_df <- read.csv(lookup_csv, stringsAsFactors = FALSE)
+  required_columns <- c("scientific_name", "common_name")
+  missing_columns <- setdiff(required_columns, names(lookup_df))
+  if (length(missing_columns) > 0) {
+    stop(
+      paste(
+        "non-native species lookup is missing required columns:",
+        paste(missing_columns, collapse = ", ")
+      )
+    )
+  }
+
+  lookup_df$scientific_name <- trimws(as.character(lookup_df$scientific_name))
+  lookup_df$common_name <- vapply(lookup_df$common_name, normalise_common_name, character(1))
+  lookup_df <- lookup_df[
+    !is.na(lookup_df$scientific_name) &
+      nzchar(lookup_df$scientific_name) &
+      !is.na(lookup_df$common_name) &
+      nzchar(lookup_df$common_name),
+    ,
+    drop = FALSE
+  ]
+  lookup_df[!duplicated(lookup_df$scientific_name), , drop = FALSE]
+}
+
 floor_to_bin <- function(date_time, bin_minutes, timezone) {
   if (!inherits(date_time, "POSIXct")) {
     stop("date_time must be POSIXct.")
@@ -2786,6 +2816,108 @@ build_top_species_time_series <- function(detections_subset,
   species_time_series
 }
 
+build_selected_species_time_series <- function(detections_subset,
+                                               summary_metadata_subset,
+                                               species_lookup,
+                                               bin_minutes,
+                                               timezone) {
+  if (nrow(species_lookup) == 0) {
+    return(data.frame(
+      time_bin = as.POSIXct(character()),
+      data_available = logical(),
+      scientific_name = character(),
+      common_name = character(),
+      species_label = character(),
+      identification_count = integer(),
+      identification_count_plot = numeric(),
+      stringsAsFactors = FALSE
+    ))
+  }
+
+  species_lookup <- species_lookup[, c("scientific_name", "common_name", "species_label"), drop = FALSE]
+  species_lookup$scientific_name <- trimws(as.character(species_lookup$scientific_name))
+  species_lookup$common_name <- vapply(species_lookup$common_name, normalise_common_name, character(1))
+  species_lookup$species_label <- as.character(species_lookup$species_label)
+  species_lookup <- species_lookup[!duplicated(species_lookup$scientific_name), , drop = FALSE]
+
+  if (nrow(detections_subset) > 0) {
+    detections_subset$species_label <- paste0(detections_subset$common_name, " (", detections_subset$scientific_name, ")")
+    detections_subset <- detections_subset[
+      detections_subset$scientific_name %in% species_lookup$scientific_name,
+      ,
+      drop = FALSE
+    ]
+  }
+
+  available_time_bins <- build_available_time_bin_summary(
+    summary_metadata_subset = summary_metadata_subset,
+    bin_minutes = bin_minutes,
+    timezone = timezone
+  )
+  if (nrow(available_time_bins) == 0) {
+    return(data.frame(
+      time_bin = as.POSIXct(character()),
+      data_available = logical(),
+      scientific_name = character(),
+      common_name = character(),
+      species_label = character(),
+      identification_count = integer(),
+      identification_count_plot = numeric(),
+      stringsAsFactors = FALSE
+    ))
+  }
+
+  if (nrow(detections_subset) > 0) {
+    detections_subset$time_bin <- floor_to_bin(
+      detections_subset$date_time,
+      bin_minutes = bin_minutes,
+      timezone = timezone
+    )
+    species_time_series <- aggregate(
+      list(identification_count = rep(1L, nrow(detections_subset))),
+      by = list(
+        time_bin = detections_subset$time_bin,
+        scientific_name = detections_subset$scientific_name,
+        common_name = detections_subset$common_name,
+        species_label = detections_subset$species_label
+      ),
+      FUN = sum
+    )
+  } else {
+    species_time_series <- data.frame(
+      time_bin = as.POSIXct(character()),
+      scientific_name = character(),
+      common_name = character(),
+      species_label = character(),
+      identification_count = integer(),
+      stringsAsFactors = FALSE
+    )
+  }
+
+  species_time_grid <- merge(
+    available_time_bins,
+    species_lookup,
+    by = NULL
+  )
+  species_time_series <- merge(
+    species_time_grid,
+    species_time_series,
+    by = c("time_bin", "scientific_name", "common_name", "species_label"),
+    all.x = TRUE
+  )
+  species_time_series$identification_count[is.na(species_time_series$identification_count)] <- 0L
+  species_time_series$identification_count_plot <- ifelse(
+    species_time_series$data_available & species_time_series$identification_count > 0,
+    species_time_series$identification_count,
+    NA_real_
+  )
+  species_time_series$species_label <- factor(
+    species_time_series$species_label,
+    levels = species_lookup$species_label
+  )
+  species_time_series
+}
+
 write_analysis_summary <- function(summary_txt,
                                    generated_at,
                                    summary_root,
@@ -2888,6 +3020,14 @@ if (!requireNamespace("ggplot2", quietly = TRUE)) {
 }
 
 repo_root <- find_repo_root(get_current_file_path())
+non_native_species_lookup_csv <- file.path(
+  repo_root,
+  "data",
+  "species_lists",
+  "reference",
+  "australia_non_native_birds.csv"
+)
+non_native_species_lookup <- read_non_native_species_lookup(non_native_species_lookup_csv)
 
 # other user-defined settings ----------------------------------------------------
 summary_root <- normalizePath(file.path(repo_root, "out"), mustWork = TRUE)
@@ -3137,6 +3277,107 @@ species_counts <- species_counts[order(-species_counts$identification_count, spe
 species_counts$species_label <- factor(species_counts$species_label, levels = rev(species_counts$species_label))
 global_species_levels <- levels(species_counts$species_label)
 species_label_plotmath_lookup <- setNames(species_counts$species_label_plotmath, species_counts$species_label)
+
+non_native_species_summary <- merge(
+  non_native_species_lookup,
+  species_counts[, c("scientific_name", "species_label", "identification_count"), drop = FALSE],
+  by = "scientific_name",
+  all.x = FALSE,
+  all.y = FALSE
+)
+non_native_species_summary$species_label <- as.character(non_native_species_summary$species_label)
+non_native_species_summary <- non_native_species_summary[
+  order(-non_native_species_summary$identification_count, non_native_species_summary$species_label),
+  ,
+  drop = FALSE
+]
+if (nrow(non_native_species_summary) > 0) {
+  non_native_recorder_presence <- unique(filtered_detections[
+    filtered_detections$scientific_name %in% non_native_species_summary$scientific_name,
+    c("scientific_name", "recorder_id"),
+    drop = FALSE
+  ])
+  non_native_recorder_summary <- aggregate(
+    list(recorder_count = rep(1L, nrow(non_native_recorder_presence))),
+    by = list(scientific_name = non_native_recorder_presence$scientific_name),
+    FUN = sum
+  )
+  non_native_recorder_ids <- aggregate(
+    list(recorder_ids = non_native_recorder_presence$recorder_id),
+    by = list(scientific_name = non_native_recorder_presence$scientific_name),
+    FUN = function(x) paste(sort(unique(x)), collapse = "; ")
+  )
+  non_native_first_detection <- aggregate(
+    list(first_detection_time = filtered_detections$date_time),
+    by = list(scientific_name = filtered_detections$scientific_name),
+    FUN = min
+  )
+  non_native_last_detection <- aggregate(
+    list(last_detection_time = filtered_detections$date_time),
+    by = list(scientific_name = filtered_detections$scientific_name),
+    FUN = max
+  )
+  non_native_first_last <- merge(
+    non_native_first_detection,
+    non_native_last_detection,
+    by = "scientific_name",
+    all = TRUE
+  )
+  non_native_first_last <- non_native_first_last[
+    non_native_first_last$scientific_name %in% non_native_species_summary$scientific_name,
+    ,
+    drop = FALSE
+  ]
+  non_native_species_summary <- merge(non_native_species_summary, non_native_recorder_summary, by = "scientific_name", all.x = TRUE)
+  non_native_species_summary <- merge(non_native_species_summary, non_native_recorder_ids, by = "scientific_name", all.x = TRUE)
+  non_native_species_summary <- merge(
+    non_native_species_summary,
+    non_native_first_last[, c("scientific_name", "first_detection_time", "last_detection_time"), drop = FALSE],
+    by = "scientific_name",
+    all.x = TRUE
+  )
+  non_native_species_summary$recorder_count[is.na(non_native_species_summary$recorder_count)] <- 0L
+  non_native_species_summary$recorder_ids[is.na(non_native_species_summary$recorder_ids)] <- ""
+  non_native_species_summary$species_label_plotmath <- unname(
+    species_label_plotmath_lookup[non_native_species_summary$species_label]
+  )
+} else {
+  non_native_species_summary <- data.frame(
+    scientific_name = character(),
+    common_name = character(),
+    establishment_status = character(),
+    notes = character(),
+    species_label = character(),
+    identification_count = integer(),
+    recorder_count = integer(),
+    recorder_ids = character(),
+    first_detection_time = as.POSIXct(character(), tz = analysis_timezone),
+    last_detection_time = as.POSIXct(character(), tz = analysis_timezone),
+    species_label_plotmath = character(),
+    stringsAsFactors = FALSE
+  )
+}
+
+non_native_species_lookup_detected <- non_native_species_summary[
+  ,
+  c("scientific_name", "common_name", "species_label"),
+  drop = FALSE
+]
+non_native_time_series <- build_selected_species_time_series(
+  detections_subset = filtered_detections,
+  summary_metadata_subset = summary_file_metadata,
+  species_lookup = non_native_species_lookup_detected,
+  bin_minutes = top_species_time_bin_minutes,
+  timezone = analysis_timezone
+)
+non_native_time_series_positive <- non_native_time_series[
+  !is.na(non_native_time_series$identification_count_plot),
+  ,
+  drop = FALSE
+]
+non_native_label_parser <- build_species_label_parser(species_label_plotmath_lookup)
+non_native_style <- top_species_style_values(unique(as.character(non_native_time_series$species_label)))
+
 observed_months <- if (any(!is.na(summary_file_metadata$local_date))) {
   data.frame(
     month_num = as.integer(format(summary_file_metadata$local_date[!is.na(summary_file_metadata$local_date)], "%m")),
@@ -3323,6 +3564,32 @@ top_species_time_series_by_recorder_positive <- top_species_time_series_by_recor
   drop = FALSE
 ]
 top_species_by_recorder_style <- top_species_style_values(unique(as.character(top_species_time_series_by_recorder$species_label)))
+
+non_native_time_series_by_recorder <- do.call(
+  rbind,
+  lapply(recorder_ids, function(recorder_id) {
+    subset_detections <- filtered_detections[filtered_detections$recorder_id == recorder_id, , drop = FALSE]
+    subset_non_native_species_lookup <- non_native_species_lookup_detected[
+      non_native_species_lookup_detected$scientific_name %in% subset_detections$scientific_name,
+      ,
+      drop = FALSE
+    ]
+    subset_non_native <- build_selected_species_time_series(
+      detections_subset = subset_detections,
+      summary_metadata_subset = summary_file_metadata[summary_file_metadata$recorder_id == recorder_id, , drop = FALSE],
+      species_lookup = subset_non_native_species_lookup,
+      bin_minutes = top_species_time_bin_minutes,
+      timezone = analysis_timezone
+    )
+    subset_non_native$recorder_id <- recorder_id
+    subset_non_native
+  })
+)
+non_native_time_series_by_recorder_positive <- non_native_time_series_by_recorder[
+  !is.na(non_native_time_series_by_recorder$identification_count_plot),
+  ,
+  drop = FALSE
+]
 
 cumulative_new_species_by_recorder <- do.call(
   rbind,
@@ -3677,6 +3944,9 @@ light_phase_sampling_effort_csv <- file.path(output_dir, "birdnet_light_phase_sa
 light_phase_sampling_effort_by_recorder_csv <- file.path(output_dir, "birdnet_light_phase_sampling_effort_by_recorder.csv")
 diel_species_csv <- file.path(output_dir, "birdnet_diel_activity_by_species.csv")
 diel_species_by_recorder_csv <- file.path(output_dir, "birdnet_diel_activity_by_species_by_recorder.csv")
+non_native_species_csv <- file.path(output_dir, "birdnet_non_native_species_detected.csv")
+non_native_time_series_csv <- file.path(output_dir, "birdnet_non_native_species_detections_through_time.csv")
+non_native_time_series_by_recorder_csv <- file.path(output_dir, "birdnet_non_native_species_detections_through_time_by_recorder.csv")
 monthly_raw_species_richness_csv <- file.path(output_dir, "birdnet_raw_species_richness_by_diversity_window.csv")
 time_series_csv <- file.path(output_dir, "birdnet_identifications_by_time_bin.csv")
 time_series_by_recorder_csv <- file.path(output_dir, "birdnet_identifications_by_time_bin_by_recorder.csv")
@@ -3710,6 +3980,9 @@ write.csv(light_phase_sampling_effort, light_phase_sampling_effort_csv, row.name
 write.csv(light_phase_sampling_effort_by_recorder, light_phase_sampling_effort_by_recorder_csv, row.names = FALSE)
 write.csv(diel_species_summary, diel_species_csv, row.names = FALSE)
 write.csv(diel_species_summary_by_recorder, diel_species_by_recorder_csv, row.names = FALSE)
+write.csv(non_native_species_summary, non_native_species_csv, row.names = FALSE)
+write.csv(non_native_time_series, non_native_time_series_csv, row.names = FALSE)
+write.csv(non_native_time_series_by_recorder, non_native_time_series_by_recorder_csv, row.names = FALSE)
 write.csv(monthly_raw_species_richness, monthly_raw_species_richness_csv, row.names = FALSE)
 write.csv(time_series_summary, time_series_csv, row.names = FALSE)
 write.csv(time_series_by_recorder, time_series_by_recorder_csv, row.names = FALSE)
@@ -4167,6 +4440,53 @@ top_species_plot <- ggplot2::ggplot(
   ) +
   top_species_plot_theme()
 
+if (nrow(non_native_species_summary) > 0) {
+  non_native_plot <- ggplot2::ggplot(
+    non_native_time_series,
+    ggplot2::aes(x = time_bin, y = identification_count_plot, colour = species_label, group = species_label)
+  ) +
+    ggplot2::geom_rect(
+      data = top_species_no_data_bands,
+      ggplot2::aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf),
+      inherit.aes = FALSE,
+      fill = "grey82",
+      alpha = 0.35
+    ) +
+    ggplot2::geom_line(
+      data = non_native_time_series_positive,
+      ggplot2::aes(linetype = species_label, linewidth = species_label)
+    ) +
+    ggplot2::geom_point(
+      data = non_native_time_series_positive,
+      ggplot2::aes(shape = species_label, size = species_label),
+      stroke = 0.7
+    ) +
+    top_species_scale_layers(
+      style_values = non_native_style,
+      label_parser = non_native_label_parser,
+      legend_rows = 1L
+    ) +
+    ggplot2::scale_y_log10() +
+    ggplot2::labs(
+      title = "detections through time for non-native bird species",
+      subtitle = paste0(
+        "species non-native to Australia | bin size: ",
+        round(top_species_time_bin_minutes / 60, 2),
+        " hours | grey bands = no data"
+      ),
+      x = "time bin",
+      y = expression("number of detections (" * log[10] * " scale)"),
+      colour = "species"
+    ) +
+    top_species_plot_theme()
+} else {
+  non_native_plot <- make_placeholder_plot(
+    title_text = "detections through time for non-native bird species",
+    subtitle_text = "species non-native to Australia",
+    body_text = "no species in the current detections matched the non-native species lookup."
+  )
+}
+
 time_series_by_recorder_plot <- ggplot2::ggplot(
   time_series_by_recorder,
   ggplot2::aes(x = time_bin, y = identification_count_plot)
@@ -4562,6 +4882,7 @@ if (isTRUE(show_plots_in_session) && interactive()) {
   print(total_diversity_recorder_comparison_plot)
   print(hill_q2_recorder_comparison_plot)
   print(top_species_plot)
+  print(non_native_plot)
   print(diel_activity_heatmap_plot)
   print(diel_preference_plot)
   print(periodicity_plot)
@@ -4669,6 +4990,13 @@ ggplot2::ggsave(
   dpi = 150
 )
 ggplot2::ggsave(
+  filename = file.path(output_dir, "birdnet_non_native_species_detections_through_time.png"),
+  plot = non_native_plot,
+  width = 14,
+  height = 8,
+  dpi = 150
+)
+ggplot2::ggsave(
   filename = file.path(output_dir, "birdnet_diel_activity_by_species.png"),
   plot = diel_activity_heatmap_plot,
   width = 13,
@@ -4753,11 +5081,22 @@ for (recorder_id in recorder_ids) {
     ,
     drop = FALSE
   ]
+  recorder_non_native <- non_native_time_series_by_recorder[
+    non_native_time_series_by_recorder$recorder_id == recorder_id,
+    ,
+    drop = FALSE
+  ]
   recorder_top_species_levels <- unique(as.character(recorder_top_species$species_label))
   recorder_top_species_lookup <- species_label_plotmath_lookup[recorder_top_species_levels]
   recorder_top_species_label_parser <- build_species_label_parser(recorder_top_species_lookup)
   recorder_top_species_style <- top_species_style_values(recorder_top_species_levels)
   recorder_top_species$species_label <- factor(as.character(recorder_top_species$species_label), levels = recorder_top_species_levels)
+  recorder_non_native_levels <- unique(as.character(recorder_non_native$species_label))
+  recorder_non_native_lookup <- species_label_plotmath_lookup[recorder_non_native_levels]
+  recorder_non_native_label_parser <- build_species_label_parser(recorder_non_native_lookup)
+  recorder_non_native_style <- top_species_style_values(recorder_non_native_levels)
+  recorder_non_native$species_label <- factor(as.character(recorder_non_native$species_label), levels = recorder_non_native_levels)
+  recorder_non_native_positive <- recorder_non_native[!is.na(recorder_non_native$identification_count_plot), , drop = FALSE]
   recorder_no_data_bands <- time_series_no_data_bands_by_recorder[
     time_series_no_data_bands_by_recorder$recorder_id == recorder_id,
     ,
@@ -5005,6 +5344,53 @@ for (recorder_id in recorder_ids) {
     ) +
     top_species_plot_theme()
 
+  if (nrow(recorder_non_native_positive) > 0) {
+    recorder_non_native_plot <- ggplot2::ggplot(
+      recorder_non_native,
+      ggplot2::aes(x = time_bin, y = identification_count_plot, colour = species_label, group = species_label)
+    ) +
+      ggplot2::geom_rect(
+        data = recorder_top_species_no_data_bands,
+        ggplot2::aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf),
+        inherit.aes = FALSE,
+        fill = "grey82",
+        alpha = 0.35
+      ) +
+      ggplot2::geom_line(
+        data = recorder_non_native_positive,
+        ggplot2::aes(linetype = species_label, linewidth = species_label)
+      ) +
+      ggplot2::geom_point(
+        data = recorder_non_native_positive,
+        ggplot2::aes(shape = species_label, size = species_label),
+        stroke = 0.7
+      ) +
+      top_species_scale_layers(
+        style_values = recorder_non_native_style,
+        label_parser = recorder_non_native_label_parser,
+        legend_rows = 1L
+      ) +
+      ggplot2::scale_y_log10() +
+      ggplot2::labs(
+        title = sprintf("non-native bird detections through time: %s", recorder_id),
+        subtitle = paste0(
+          "species non-native to Australia | bin size: ",
+          round(top_species_time_bin_minutes / 60, 2),
+          " hours | grey bands = no data"
+        ),
+        x = "time bin",
+        y = expression("number of detections (" * log[10] * " scale)"),
+        colour = "species"
+      ) +
+      top_species_plot_theme()
+  } else {
+    recorder_non_native_plot <- make_placeholder_plot(
+      title_text = sprintf("non-native bird detections through time: %s", recorder_id),
+      subtitle_text = "species non-native to Australia",
+      body_text = "no non-native species were detected for this recorder."
+    )
+  }
+
   recorder_temporal_diagnostics$facet_label <- paste(
     recorder_temporal_diagnostics$metric_name,
     recorder_temporal_diagnostics$panel,
@@ -5038,6 +5424,7 @@ for (recorder_id in recorder_ids) {
     print(recorder_diversity_plot)
     print(recorder_daily_incidence_diversity_plot)
     print(recorder_top_species_plot)
+    print(recorder_non_native_plot)
     print(recorder_periodicity_plot)
   }
 
@@ -5049,6 +5436,7 @@ for (recorder_id in recorder_ids) {
   ggplot2::ggsave(file.path(recorder_dir, "birdnet_monthly_diversity_metrics.png"), recorder_diversity_plot, width = 14, height = 10, dpi = 150)
   ggplot2::ggsave(file.path(recorder_dir, "birdnet_monthly_diversity_metrics_daily_incidence.png"), recorder_daily_incidence_diversity_plot, width = 14, height = 10, dpi = 150)
   ggplot2::ggsave(file.path(recorder_dir, "birdnet_top_10_species_detections_through_time.png"), recorder_top_species_plot, width = 14, height = 8, dpi = 150)
+  ggplot2::ggsave(file.path(recorder_dir, "birdnet_non_native_species_detections_through_time.png"), recorder_non_native_plot, width = 14, height = 8, dpi = 150)
   ggplot2::ggsave(file.path(recorder_dir, "birdnet_periodicity.png"), recorder_periodicity_plot, width = 15, height = 11, dpi = 150)
 }
 

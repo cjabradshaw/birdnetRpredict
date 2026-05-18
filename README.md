@@ -364,6 +364,15 @@ The analysis workflow writes:
 - `birdnet_diel_activity_by_species_by_recorder.csv`  
   recorder-specific diel activity summaries by species using the same normalized light-phase metrics
 
+- `birdnet_non_native_species_detected.csv`  
+  detected species from the repository lookup that are non-native to Australia, including first/last detection times and which recorders detected them
+
+- `birdnet_non_native_species_detections_through_time.csv`  
+  time-binned detections through time for the detected non-native species across all recorders
+
+- `birdnet_non_native_species_detections_through_time_by_recorder.csv`  
+  time-binned detections through time for the detected non-native species calculated separately for each recorder
+
 - `birdnet_top_10_species_detections_through_time.csv`  
   detections through time for the 10 most detected species across all currently analysed recorders
 
@@ -445,6 +454,7 @@ The analysis workflow writes:
 - `birdnet_cumulative_new_species_recorder_comparison.png`
 - `birdnet_total_diversity_recorder_comparison.png`
 - `birdnet_hill_q2_recorder_comparison.png`
+- `birdnet_non_native_species_detections_through_time.png`
 - `birdnet_periodicity.png`  
   overall temporal-diagnostics figure combining all recorders currently present in the analysis, with ACF, PACF, and spectral-density panels for detections and unique species
 
@@ -452,7 +462,7 @@ The analysis workflow writes:
 - `birdnet_cumulative_new_species_by_recorder.png`
 
 - `recorders/<RECORDER_ID>/...`  
-  recorder-specific figures written for each recorder that currently has usable detections (for example `recorders/GEL_A/`). Crowded recorder-level figures such as detections through time, identifications by species, identifications by species by month, diversity metrics, and temporal periodicity diagnostics are now written only here as separate recorder-specific figures rather than root-level multi-panel comparisons.
+  recorder-specific figures written for each recorder that currently has usable detections (for example `recorders/GEL_A/`). Crowded recorder-level figures such as detections through time, identifications by species, identifications by species by month, diversity metrics, temporal periodicity diagnostics, and non-native-species time-series profiles are now written only here as separate recorder-specific figures rather than root-level multi-panel comparisons.
 
 In the species-frequency plots, the identification axis is shown on a log<sub>10</sub> scale, and common names are displayed in lowercase except where proper nouns remain capitalised. Latin names are italicised in the species-axis labels.
 The root-level analysis figures are the combined overall results across all recorders currently present in `out/`. A small set of simplified recorder-comparison plots is also written at the root level for direct cross-recorder comparison, while recorder-specific figures are written into the `recorders/` subdirectory as each recorder becomes available.
