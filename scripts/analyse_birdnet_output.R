@@ -285,6 +285,13 @@ add_species_origin_columns <- function(data_frame, non_native_scientific_names) 
   data_frame
 }
 
+species_histogram_subtitle <- function(min_confidence) {
+  paste0(
+    sprintf("minimum confidence: %.3f", min_confidence),
+    " | red bars = non-native species"
+  )
+}
+
 build_species_label_parser <- function(plotmath_lookup) {
   function(x) {
     parse(text = unname(plotmath_lookup[as.character(x)]))
@@ -4433,7 +4440,7 @@ species_counts_plot <- ggplot2::ggplot(
   ggplot2::scale_y_log10() +
   ggplot2::labs(
     title = "identifications per species",
-    subtitle = sprintf("minimum confidence: %.3f", min_confidence),
+    subtitle = species_histogram_subtitle(min_confidence),
     x = "species",
     y = expression("number of identifications (" * log[10] * " scale)")
   ) +
@@ -4464,7 +4471,7 @@ species_counts_by_month_plot <- ggplot2::ggplot(
   ggplot2::scale_y_log10() +
   ggplot2::labs(
     title = "identifications per species by month",
-    subtitle = sprintf("minimum confidence: %.3f", min_confidence),
+    subtitle = species_histogram_subtitle(min_confidence),
     x = "species",
     y = expression("number of identifications (" * log[10] * " scale)")
   ) +
@@ -4726,7 +4733,7 @@ species_counts_by_recorder_plot <- ggplot2::ggplot(
   ggplot2::scale_y_log10() +
   ggplot2::labs(
     title = "identifications per species by recorder",
-    subtitle = sprintf("minimum confidence: %.3f", min_confidence),
+    subtitle = species_histogram_subtitle(min_confidence),
     x = "species",
     y = expression("number of identifications (" * log[10] * " scale)")
   ) +
@@ -4757,7 +4764,7 @@ species_counts_by_month_by_recorder_plot <- ggplot2::ggplot(
   ggplot2::scale_y_log10() +
   ggplot2::labs(
     title = "identifications per species by recorder and month",
-    subtitle = sprintf("minimum confidence: %.3f", min_confidence),
+    subtitle = species_histogram_subtitle(min_confidence),
     x = "species",
     y = expression("number of identifications (" * log[10] * " scale)")
   ) +
@@ -5373,7 +5380,7 @@ for (recorder_id in recorder_ids) {
     ggplot2::scale_y_log10() +
     ggplot2::labs(
       title = sprintf("identifications per species: %s", recorder_id),
-      subtitle = sprintf("minimum confidence: %.3f", min_confidence),
+      subtitle = species_histogram_subtitle(min_confidence),
       x = "species",
       y = expression("number of identifications (" * log[10] * " scale)")
     ) +
@@ -5404,7 +5411,7 @@ for (recorder_id in recorder_ids) {
     ggplot2::scale_y_log10() +
     ggplot2::labs(
       title = sprintf("identifications per species by month: %s", recorder_id),
-      subtitle = sprintf("minimum confidence: %.3f", min_confidence),
+      subtitle = species_histogram_subtitle(min_confidence),
       x = "species",
       y = expression("number of identifications (" * log[10] * " scale)")
     ) +
