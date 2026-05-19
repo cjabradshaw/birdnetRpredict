@@ -262,6 +262,29 @@ top_species_plot_theme <- function() {
     )
 }
 
+species_origin_palette <- c(
+  native = "tan3",
+  non_native = "firebrick2"
+)
+
+add_species_origin_columns <- function(data_frame, non_native_scientific_names) {
+  if (!"scientific_name" %in% names(data_frame)) {
+    return(data_frame)
+  }
+
+  data_frame$species_origin <- ifelse(
+    data_frame$scientific_name %in% non_native_scientific_names,
+    "non_native",
+    "native"
+  )
+  data_frame$species_origin <- factor(
+    data_frame$species_origin,
+    levels = c("native", "non_native")
+  )
+  data_frame$species_fill_colour <- unname(species_origin_palette[as.character(data_frame$species_origin)])
+  data_frame
+}
+
 build_species_label_parser <- function(plotmath_lookup) {
   function(x) {
     parse(text = unname(plotmath_lookup[as.character(x)]))
@@ -3081,6 +3104,7 @@ non_native_species_lookup_csv <- file.path(
   "australia_non_native_birds.csv"
 )
 non_native_species_lookup <- read_non_native_species_lookup(non_native_species_lookup_csv)
+non_native_scientific_names <- unique(non_native_species_lookup$scientific_name)
 
 # other user-defined settings ----------------------------------------------------
 summary_root <- normalizePath(file.path(repo_root, "out"), mustWork = TRUE)
@@ -3334,6 +3358,7 @@ species_counts <- aggregate(
 )
 species_counts <- species_counts[species_counts$identification_count >= 1, , drop = FALSE]
 species_counts$species_label <- paste0(species_counts$common_name, " (", species_counts$scientific_name, ")")
+species_counts <- add_species_origin_columns(species_counts, non_native_scientific_names)
 species_counts$species_label_plotmath <- vapply(
   seq_len(nrow(species_counts)),
   function(index) {
@@ -3482,6 +3507,7 @@ species_counts_by_month$species_label <- paste0(
   species_counts_by_month$scientific_name,
   ")"
 )
+species_counts_by_month <- add_species_origin_columns(species_counts_by_month, non_native_scientific_names)
 species_counts_by_month$species_label <- factor(
   species_counts_by_month$species_label,
   levels = global_species_levels
@@ -3504,6 +3530,7 @@ species_counts_by_month <- merge(
   all.x = TRUE
 )
 species_counts_by_month$identification_count[is.na(species_counts_by_month$identification_count)] <- 0
+species_counts_by_month <- add_species_origin_columns(species_counts_by_month, non_native_scientific_names)
 species_counts_by_month$month_label <- factor(species_counts_by_month$month_label, levels = month.abb)
 species_counts_by_month$species_label <- factor(
   species_counts_by_month$species_label,
@@ -3727,6 +3754,7 @@ species_counts_by_recorder <- do.call(
       subset_species_counts$identification_count,
       NA_real_
     )
+    subset_species_counts <- add_species_origin_columns(subset_species_counts, non_native_scientific_names)
     subset_species_counts
   })
 )
@@ -3767,6 +3795,7 @@ species_counts_by_month_by_recorder <- do.call(
       species_levels = subset_species_levels,
       observed_months = subset_observed_months
     )
+    subset_monthly_counts <- add_species_origin_columns(subset_monthly_counts, non_native_scientific_names)
     subset_monthly_counts$recorder_id <- recorder_id
     subset_monthly_counts
   })
@@ -4391,15 +4420,16 @@ hill_q2_recorder_comparison_plot <- ggplot2::ggplot(
 
 species_counts_plot <- ggplot2::ggplot(
   species_counts,
-  ggplot2::aes(x = species_label, y = identification_count)
+  ggplot2::aes(x = species_label, y = identification_count, fill = species_origin)
 ) +
-  ggplot2::geom_col(fill = "tan3") +
+  ggplot2::geom_col() +
   ggplot2::coord_flip() +
   ggplot2::scale_x_discrete(
     labels = function(x) {
       parse(text = unname(species_label_plotmath_lookup[as.character(x)]))
     }
   ) +
+  ggplot2::scale_fill_manual(values = species_origin_palette, guide = "none", drop = FALSE) +
   ggplot2::scale_y_log10() +
   ggplot2::labs(
     title = "identifications per species",
@@ -4417,11 +4447,10 @@ species_counts_plot <- ggplot2::ggplot(
 
 species_counts_by_month_plot <- ggplot2::ggplot(
   species_counts_by_month,
-  ggplot2::aes(x = species_label, y = identification_count_plot)
+  ggplot2::aes(x = species_label, y = identification_count_plot, fill = species_origin)
 ) +
   ggplot2::geom_col(
-    data = species_counts_by_month_positive,
-    fill = "tan3"
+    data = species_counts_by_month_positive
   ) +
   ggplot2::coord_flip() +
   ggplot2::facet_grid(. ~ month_label) +
@@ -4431,6 +4460,7 @@ species_counts_by_month_plot <- ggplot2::ggplot(
       parse(text = unname(species_label_plotmath_lookup[as.character(x)]))
     }
   ) +
+  ggplot2::scale_fill_manual(values = species_origin_palette, guide = "none", drop = FALSE) +
   ggplot2::scale_y_log10() +
   ggplot2::labs(
     title = "identifications per species by month",
@@ -4679,11 +4709,10 @@ cumulative_species_by_recorder_plot <- ggplot2::ggplot(
 
 species_counts_by_recorder_plot <- ggplot2::ggplot(
   species_counts_by_recorder,
-  ggplot2::aes(x = species_label, y = identification_count_plot)
+  ggplot2::aes(x = species_label, y = identification_count_plot, fill = species_origin)
 ) +
   ggplot2::geom_col(
-    data = species_counts_by_recorder_positive,
-    fill = "tan3"
+    data = species_counts_by_recorder_positive
   ) +
   ggplot2::coord_flip() +
   ggplot2::facet_grid(recorder_id ~ ., scales = "free_y", space = "free_y") +
@@ -4693,6 +4722,7 @@ species_counts_by_recorder_plot <- ggplot2::ggplot(
       parse(text = unname(species_label_plotmath_lookup[as.character(x)]))
     }
   ) +
+  ggplot2::scale_fill_manual(values = species_origin_palette, guide = "none", drop = FALSE) +
   ggplot2::scale_y_log10() +
   ggplot2::labs(
     title = "identifications per species by recorder",
@@ -4710,11 +4740,10 @@ species_counts_by_recorder_plot <- ggplot2::ggplot(
 
 species_counts_by_month_by_recorder_plot <- ggplot2::ggplot(
   species_counts_by_month_by_recorder,
-  ggplot2::aes(x = species_label, y = identification_count_plot)
+  ggplot2::aes(x = species_label, y = identification_count_plot, fill = species_origin)
 ) +
   ggplot2::geom_col(
-    data = species_counts_by_month_by_recorder_positive,
-    fill = "tan3"
+    data = species_counts_by_month_by_recorder_positive
   ) +
   ggplot2::coord_flip() +
   ggplot2::facet_grid(recorder_id ~ month_label) +
@@ -4724,6 +4753,7 @@ species_counts_by_month_by_recorder_plot <- ggplot2::ggplot(
       parse(text = unname(species_label_plotmath_lookup[as.character(x)]))
     }
   ) +
+  ggplot2::scale_fill_manual(values = species_origin_palette, guide = "none", drop = FALSE) +
   ggplot2::scale_y_log10() +
   ggplot2::labs(
     title = "identifications per species by recorder and month",
@@ -5330,15 +5360,16 @@ for (recorder_id in recorder_ids) {
 
   recorder_species_plot <- ggplot2::ggplot(
     recorder_species_counts,
-    ggplot2::aes(x = species_label, y = identification_count)
+    ggplot2::aes(x = species_label, y = identification_count, fill = species_origin)
   ) +
-    ggplot2::geom_col(fill = "tan3") +
+    ggplot2::geom_col() +
     ggplot2::coord_flip() +
     ggplot2::scale_x_discrete(
       labels = function(x) {
         parse(text = unname(recorder_species_lookup[as.character(x)]))
       }
     ) +
+    ggplot2::scale_fill_manual(values = species_origin_palette, guide = "none", drop = FALSE) +
     ggplot2::scale_y_log10() +
     ggplot2::labs(
       title = sprintf("identifications per species: %s", recorder_id),
@@ -5356,11 +5387,10 @@ for (recorder_id in recorder_ids) {
 
   recorder_species_by_month_plot <- ggplot2::ggplot(
     recorder_species_by_month,
-    ggplot2::aes(x = species_label, y = identification_count_plot)
+    ggplot2::aes(x = species_label, y = identification_count_plot, fill = species_origin)
   ) +
     ggplot2::geom_col(
-      data = recorder_species_by_month_positive,
-      fill = "tan3"
+      data = recorder_species_by_month_positive
     ) +
     ggplot2::coord_flip() +
     ggplot2::facet_grid(. ~ month_label) +
@@ -5370,6 +5400,7 @@ for (recorder_id in recorder_ids) {
         parse(text = unname(recorder_species_lookup[as.character(x)]))
       }
     ) +
+    ggplot2::scale_fill_manual(values = species_origin_palette, guide = "none", drop = FALSE) +
     ggplot2::scale_y_log10() +
     ggplot2::labs(
       title = sprintf("identifications per species by month: %s", recorder_id),
