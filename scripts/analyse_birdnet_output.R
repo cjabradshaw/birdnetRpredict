@@ -458,6 +458,43 @@ na_posixct <- function(timezone) {
   structure(NA_real_, class = c("POSIXct", "POSIXt"), tzone = timezone)
 }
 
+available_time_bin_cache <- new.env(parent = emptyenv())
+
+hash_character_vector <- function(values) {
+  text_value <- paste(sort(as.character(values)), collapse = "\r")
+  text_ints <- utf8ToInt(text_value)
+
+  if (length(text_ints) == 0) {
+    return("0")
+  }
+
+  modulus <- 2147483629
+  hash_value <- 0
+  for (text_int in text_ints) {
+    hash_value <- (hash_value * 131 + text_int) %% modulus
+  }
+
+  as.character(hash_value)
+}
+
+bind_rows_list <- function(data_frames, empty_template = NULL) {
+  valid_frames <- Filter(function(x) !is.null(x) && nrow(x) > 0, data_frames)
+
+  if (length(valid_frames) == 0) {
+    return(empty_template)
+  }
+
+  if (requireNamespace("vctrs", quietly = TRUE)) {
+    combined_df <- do.call(vctrs::vec_rbind, valid_frames)
+    combined_df <- as.data.frame(combined_df, stringsAsFactors = FALSE)
+  } else {
+    combined_df <- do.call(rbind, valid_frames)
+  }
+
+  rownames(combined_df) <- NULL
+  combined_df
+}
+
 extract_recording_coordinates_from_path <- function(path_text) {
   matches <- regexec(
     "(-?[0-9]{1,2}\\.[0-9]+)([+-][0-9]{1,3}\\.[0-9]+)",
@@ -510,7 +547,7 @@ build_summary_file_metadata <- function(summary_csv_files, timezone) {
     )
   })
 
-  do.call(rbind, metadata_list)
+  bind_rows_list(metadata_list)
 }
 
 deg2rad <- function(x) {
@@ -750,8 +787,7 @@ build_light_phase_lookup <- function(local_dates, latitudes, longitudes, timezon
     ))
   }
 
-  solar_times <- do.call(
-    rbind,
+  solar_times <- bind_rows_list(
     lapply(seq_len(nrow(unique_keys)), function(index) {
       calculate_solar_times(
         local_date = unique_keys$local_date[[index]],
@@ -761,8 +797,7 @@ build_light_phase_lookup <- function(local_dates, latitudes, longitudes, timezon
       )
     })
   )
-  schedules <- do.call(
-    rbind,
+  schedules <- bind_rows_list(
     lapply(seq_len(nrow(unique_keys)), function(index) {
       build_light_phase_schedule(
         local_date = unique_keys$local_date[[index]],
@@ -942,7 +977,7 @@ estimate_recording_duration_seconds <- function(summary_metadata, default_hours 
     )
   })
 
-  do.call(rbind, duration_table)
+  bind_rows_list(duration_table)
 }
 
 interval_overlap_seconds <- function(start_a, end_a, start_b, end_b) {
@@ -991,7 +1026,7 @@ calculate_recording_phase_effort <- function(recording_start_time,
     )
   })
 
-  effort_df <- do.call(rbind, effort_rows)
+  effort_df <- bind_rows_list(effort_rows)
   aggregate(
     list(sampled_hours = effort_df$sampled_hours),
     by = list(
@@ -1039,7 +1074,7 @@ build_recording_phase_effort <- function(summary_metadata, timezone) {
     effort_df
   })
 
-  do.call(rbind, effort_list)
+  bind_rows_list(effort_list)
 }
 
 build_diel_species_summary <- function(detections_subset, effort_summary, include_recorder = FALSE) {
@@ -1144,7 +1179,7 @@ build_diel_species_summary <- function(detections_subset, effort_summary, includ
     summary_row
   })
 
-  summary_df <- do.call(rbind, summary_list)
+  summary_df <- bind_rows_list(summary_list, empty_template = empty_summary)
   summary_df[order(-summary_df$total_detections, summary_df$species_label), , drop = FALSE]
 }
 
@@ -1777,7 +1812,7 @@ build_monthly_diversity_summary <- function(filtered_detections, diversity_windo
     )
   })
 
-  monthly_diversity_summary <- do.call(rbind, monthly_diversity_list)
+  monthly_diversity_summary <- bind_rows_list(monthly_diversity_list)
   monthly_diversity_summary[order(monthly_diversity_summary$recorder_id, monthly_diversity_summary$diversity_window_start), , drop = FALSE]
 }
 
@@ -1901,7 +1936,7 @@ build_monthly_daily_incidence_diversity_summary <- function(filtered_detections,
     )
   })
 
-  monthly_diversity_summary <- do.call(rbind, monthly_diversity_list)
+  monthly_diversity_summary <- bind_rows_list(monthly_diversity_list)
   monthly_diversity_summary[order(monthly_diversity_summary$recorder_id, monthly_diversity_summary$diversity_window_start), , drop = FALSE]
 }
 
@@ -2013,6 +2048,17 @@ build_available_time_bin_summary <- function(summary_metadata_subset, bin_minute
     ))
   }
 
+  cache_key <- paste(
+    bin_minutes,
+    timezone,
+    nrow(valid_metadata),
+    hash_character_vector(valid_metadata$summary_csv),
+    sep = "::"
+  )
+  if (exists(cache_key, envir = available_time_bin_cache, inherits = FALSE)) {
+    return(get(cache_key, envir = available_time_bin_cache, inherits = FALSE))
+  }
+
   duration_lookup <- estimate_recording_duration_seconds(valid_metadata)
   valid_metadata <- merge(valid_metadata, duration_lookup, by = "recorder_id", all.x = TRUE)
   valid_metadata$recording_end_time <- valid_metadata$recording_start_time + valid_metadata$estimated_duration_seconds
@@ -2041,19 +2087,24 @@ build_available_time_bin_summary <- function(summary_metadata_subset, bin_minute
     data_available = overall_grid %in% available_bins,
     stringsAsFactors = FALSE
   )
-  time_bin_summary[order(time_bin_summary$time_bin), , drop = FALSE]
+  time_bin_summary <- time_bin_summary[order(time_bin_summary$time_bin), , drop = FALSE]
+  assign(cache_key, time_bin_summary, envir = available_time_bin_cache)
+  time_bin_summary
 }
 
 build_time_series_summary_for_subset <- function(detections_subset,
                                                  summary_metadata_subset,
                                                  bin_minutes,
                                                  timezone,
-                                                 rolling_mean_window_days = 7) {
-  available_time_bins <- build_available_time_bin_summary(
-    summary_metadata_subset = summary_metadata_subset,
-    bin_minutes = bin_minutes,
-    timezone = timezone
-  )
+                                                 rolling_mean_window_days = 7,
+                                                 available_time_bins = NULL) {
+  if (is.null(available_time_bins)) {
+    available_time_bins <- build_available_time_bin_summary(
+      summary_metadata_subset = summary_metadata_subset,
+      bin_minutes = bin_minutes,
+      timezone = timezone
+    )
+  }
 
   if (nrow(available_time_bins) == 0) {
     return(data.frame(
@@ -2133,7 +2184,7 @@ build_no_data_bands <- function(time_series_summary, bin_minutes) {
     )
   })
 
-  do.call(rbind, bands)
+  bind_rows_list(bands)
 }
 
 build_no_data_window_bands <- function(window_summary, group_columns = character()) {
@@ -2171,8 +2222,7 @@ build_no_data_window_bands <- function(window_summary, group_columns = character
       no_data_windows$diversity_window_start[-1] > (no_data_windows$diversity_window_end[-nrow(no_data_windows)] + 1)
     )
     segment_id <- cumsum(segment_breaks)
-    band_df <- do.call(
-      rbind,
+    band_df <- bind_rows_list(
       lapply(split(no_data_windows, segment_id), function(segment_df) {
         data.frame(
           xmin = min(segment_df$diversity_window_start),
@@ -2196,7 +2246,7 @@ build_no_data_window_bands <- function(window_summary, group_columns = character
     return(empty_df)
   }
 
-  do.call(rbind, band_list)
+  bind_rows_list(band_list, empty_template = empty_df)
 }
 
 extract_longest_available_segment <- function(time_series_summary) {
@@ -2219,12 +2269,15 @@ extract_longest_available_segment <- function(time_series_summary) {
 build_cumulative_new_species_for_subset <- function(detections_subset,
                                                     summary_metadata_subset,
                                                     bin_minutes,
-                                                    timezone) {
-  available_time_bins <- build_available_time_bin_summary(
-    summary_metadata_subset = summary_metadata_subset,
-    bin_minutes = bin_minutes,
-    timezone = timezone
-  )
+                                                    timezone,
+                                                    available_time_bins = NULL) {
+  if (is.null(available_time_bins)) {
+    available_time_bins <- build_available_time_bin_summary(
+      summary_metadata_subset = summary_metadata_subset,
+      bin_minutes = bin_minutes,
+      timezone = timezone
+    )
+  }
 
   if (nrow(available_time_bins) == 0) {
     return(data.frame(
@@ -2420,13 +2473,7 @@ empty_temporal_peaks_df <- function() {
 }
 
 bind_data_frames <- function(data_frames, empty_template) {
-  valid_frames <- Filter(function(x) !is.null(x) && nrow(x) > 0, data_frames)
-
-  if (length(valid_frames) == 0) {
-    return(empty_template)
-  }
-
-  do.call(rbind, valid_frames)
+  bind_rows_list(data_frames, empty_template = empty_template)
 }
 
 identify_spectral_peaks <- function(frequency_cycles_per_bin, spectral_density, metric_name, bin_minutes, max_peaks = 5L) {
@@ -2742,7 +2789,8 @@ build_top_species_time_series <- function(detections_subset,
                                           summary_metadata_subset,
                                           bin_minutes,
                                           top_n = 10L,
-                                          timezone) {
+                                          timezone,
+                                          available_time_bins = NULL) {
   if (nrow(detections_subset) == 0) {
     return(data.frame(
       time_bin = as.POSIXct(character()),
@@ -2777,11 +2825,13 @@ build_top_species_time_series <- function(detections_subset,
     timezone = timezone
   )
 
-  available_time_bins <- build_available_time_bin_summary(
-    summary_metadata_subset = summary_metadata_subset,
-    bin_minutes = bin_minutes,
-    timezone = timezone
-  )
+  if (is.null(available_time_bins)) {
+    available_time_bins <- build_available_time_bin_summary(
+      summary_metadata_subset = summary_metadata_subset,
+      bin_minutes = bin_minutes,
+      timezone = timezone
+    )
+  }
 
   species_time_series <- aggregate(
     list(identification_count = rep(1L, nrow(detections_subset))),
@@ -2820,7 +2870,8 @@ build_selected_species_time_series <- function(detections_subset,
                                                summary_metadata_subset,
                                                species_lookup,
                                                bin_minutes,
-                                               timezone) {
+                                               timezone,
+                                               available_time_bins = NULL) {
   if (nrow(species_lookup) == 0) {
     return(data.frame(
       time_bin = as.POSIXct(character()),
@@ -2849,11 +2900,13 @@ build_selected_species_time_series <- function(detections_subset,
     ]
   }
 
-  available_time_bins <- build_available_time_bin_summary(
-    summary_metadata_subset = summary_metadata_subset,
-    bin_minutes = bin_minutes,
-    timezone = timezone
-  )
+  if (is.null(available_time_bins)) {
+    available_time_bins <- build_available_time_bin_summary(
+      summary_metadata_subset = summary_metadata_subset,
+      bin_minutes = bin_minutes,
+      timezone = timezone
+    )
+  }
   if (nrow(available_time_bins) == 0) {
     return(data.frame(
       time_bin = as.POSIXct(character()),
@@ -3139,7 +3192,7 @@ if (length(loaded_tables) == 0) {
   stop("summary CSV files found, but none currently contain usable detections")
 }
 
-combined_detections <- do.call(rbind, loaded_tables)
+combined_detections <- bind_rows_list(loaded_tables)
 combined_detections$date_time <- as.POSIXct(
   combined_detections$date_time,
   format = "%Y-%m-%d %H:%M:%S %z",
@@ -3208,19 +3261,31 @@ if (nrow(light_phase_bundle$solar_times) > 0) {
   filtered_detections$sunrise <- light_phase_bundle$solar_times$sunrise[light_phase_match]
   filtered_detections$sunset <- light_phase_bundle$solar_times$sunset[light_phase_match]
   filtered_detections$civil_dusk <- light_phase_bundle$solar_times$civil_dusk[light_phase_match]
-  filtered_detections$light_phase <- vapply(
-    seq_len(nrow(filtered_detections)),
-    function(index) {
-      if (is.na(light_phase_match[[index]])) {
-        return(NA_character_)
-      }
-      classify_light_phase(
-        date_time = filtered_detections$date_time[[index]],
-        solar_time_row = light_phase_bundle$solar_times[light_phase_match[[index]], , drop = FALSE]
+  filtered_detections$light_phase <- rep(NA_character_, nrow(filtered_detections))
+  matched_rows <- !is.na(light_phase_match)
+  if (any(matched_rows)) {
+    matched_indices <- light_phase_match[matched_rows]
+    fallback_phase <- light_phase_bundle$solar_times$fallback_phase[matched_indices]
+    matched_times <- filtered_detections$date_time[matched_rows]
+    sunrise <- filtered_detections$sunrise[matched_rows]
+    sunset <- filtered_detections$sunset[matched_rows]
+    civil_dawn <- filtered_detections$civil_dawn[matched_rows]
+    civil_dusk <- filtered_detections$civil_dusk[matched_rows]
+    filtered_detections$light_phase[matched_rows] <- ifelse(
+      !is.na(fallback_phase),
+      fallback_phase,
+      ifelse(
+        matched_times >= sunrise & matched_times < sunset,
+        "daylight",
+        ifelse(
+          (matched_times >= civil_dawn & matched_times < sunrise) |
+            (matched_times >= sunset & matched_times < civil_dusk),
+          "twilight",
+          "night"
+        )
       )
-    },
-    character(1)
-  )
+    )
+  }
 } else {
   filtered_detections$civil_dawn <- na_posixct(analysis_timezone)
   filtered_detections$sunrise <- na_posixct(analysis_timezone)
@@ -3234,7 +3299,12 @@ time_series_summary <- build_time_series_summary_for_subset(
   summary_metadata_subset = summary_file_metadata,
   bin_minutes = bin_minutes,
   timezone = analysis_timezone,
-  rolling_mean_window_days = rolling_mean_window_days
+  rolling_mean_window_days = rolling_mean_window_days,
+  available_time_bins = build_available_time_bin_summary(
+    summary_metadata_subset = summary_file_metadata,
+    bin_minutes = bin_minutes,
+    timezone = analysis_timezone
+  )
 )
 overall_no_data_bands <- build_no_data_bands(time_series_summary, bin_minutes = bin_minutes)
 top_species_time_bin_summary <- build_available_time_bin_summary(
@@ -3250,7 +3320,8 @@ cumulative_new_species <- build_cumulative_new_species_for_subset(
   detections_subset = filtered_detections,
   summary_metadata_subset = summary_file_metadata,
   bin_minutes = bin_minutes,
-  timezone = analysis_timezone
+  timezone = analysis_timezone,
+  available_time_bins = time_series_summary[, c("time_bin", "data_available"), drop = FALSE]
 )
 
 species_counts <- aggregate(
@@ -3368,7 +3439,8 @@ non_native_time_series <- build_selected_species_time_series(
   summary_metadata_subset = summary_file_metadata,
   species_lookup = non_native_species_lookup_detected,
   bin_minutes = top_species_time_bin_minutes,
-  timezone = analysis_timezone
+  timezone = analysis_timezone,
+  available_time_bins = top_species_time_bin_summary
 )
 non_native_time_series_positive <- non_native_time_series[
   !is.na(non_native_time_series$identification_count_plot),
@@ -3465,7 +3537,8 @@ top_species_time_series <- build_top_species_time_series(
   summary_metadata_subset = summary_file_metadata,
   bin_minutes = top_species_time_bin_minutes,
   top_n = 10L,
-  timezone = analysis_timezone
+  timezone = analysis_timezone,
+  available_time_bins = top_species_time_bin_summary
 )
 top_species_time_series_positive <- top_species_time_series[
   !is.na(top_species_time_series$identification_count_plot),
@@ -3482,17 +3555,40 @@ recorder_colour_values <- stats::setNames(
 )
 recorder_output_root <- file.path(output_dir, "recorders")
 dir.create(recorder_output_root, recursive = TRUE, showWarnings = FALSE)
+detections_by_recorder <- split(filtered_detections, filtered_detections$recorder_id)
+metadata_by_recorder <- split(summary_file_metadata, summary_file_metadata$recorder_id)
+available_time_bins_by_recorder <- stats::setNames(
+  lapply(recorder_ids, function(recorder_id) {
+    build_available_time_bin_summary(
+      summary_metadata_subset = metadata_by_recorder[[recorder_id]],
+      bin_minutes = bin_minutes,
+      timezone = analysis_timezone
+    )
+  }),
+  recorder_ids
+)
+top_species_time_bins_by_recorder <- stats::setNames(
+  lapply(recorder_ids, function(recorder_id) {
+    build_available_time_bin_summary(
+      summary_metadata_subset = metadata_by_recorder[[recorder_id]],
+      bin_minutes = top_species_time_bin_minutes,
+      timezone = analysis_timezone
+    )
+  }),
+  recorder_ids
+)
 
 time_series_by_recorder <- do.call(
   rbind,
   lapply(recorder_ids, function(recorder_id) {
-    subset_detections <- filtered_detections[filtered_detections$recorder_id == recorder_id, , drop = FALSE]
+    subset_detections <- detections_by_recorder[[recorder_id]]
     subset_time_series <- build_time_series_summary_for_subset(
       detections_subset = subset_detections,
-      summary_metadata_subset = summary_file_metadata[summary_file_metadata$recorder_id == recorder_id, , drop = FALSE],
+      summary_metadata_subset = metadata_by_recorder[[recorder_id]],
       bin_minutes = bin_minutes,
       timezone = analysis_timezone,
-      rolling_mean_window_days = rolling_mean_window_days
+      rolling_mean_window_days = rolling_mean_window_days,
+      available_time_bins = available_time_bins_by_recorder[[recorder_id]]
     )
     subset_time_series$recorder_id <- recorder_id
     subset_time_series
@@ -3522,13 +3618,14 @@ if (is.null(time_series_no_data_bands_by_recorder)) {
 top_species_time_series_by_recorder <- do.call(
   rbind,
   lapply(recorder_ids, function(recorder_id) {
-    subset_detections <- filtered_detections[filtered_detections$recorder_id == recorder_id, , drop = FALSE]
+    subset_detections <- detections_by_recorder[[recorder_id]]
     subset_top_species <- build_top_species_time_series(
       detections_subset = subset_detections,
-      summary_metadata_subset = summary_file_metadata[summary_file_metadata$recorder_id == recorder_id, , drop = FALSE],
+      summary_metadata_subset = metadata_by_recorder[[recorder_id]],
       bin_minutes = top_species_time_bin_minutes,
       top_n = 10L,
-      timezone = analysis_timezone
+      timezone = analysis_timezone,
+      available_time_bins = top_species_time_bins_by_recorder[[recorder_id]]
     )
     subset_top_species$recorder_id <- recorder_id
     subset_top_species
@@ -3537,11 +3634,7 @@ top_species_time_series_by_recorder <- do.call(
 top_species_no_data_bands_by_recorder <- do.call(
   rbind,
   lapply(recorder_ids, function(recorder_id) {
-    subset_time_bins <- build_available_time_bin_summary(
-      summary_metadata_subset = summary_file_metadata[summary_file_metadata$recorder_id == recorder_id, , drop = FALSE],
-      bin_minutes = top_species_time_bin_minutes,
-      timezone = analysis_timezone
-    )
+    subset_time_bins <- top_species_time_bins_by_recorder[[recorder_id]]
     subset_bands <- build_no_data_bands(subset_time_bins, bin_minutes = top_species_time_bin_minutes)
     if (nrow(subset_bands) == 0) {
       return(NULL)
@@ -3568,7 +3661,7 @@ top_species_by_recorder_style <- top_species_style_values(unique(as.character(to
 non_native_time_series_by_recorder <- do.call(
   rbind,
   lapply(recorder_ids, function(recorder_id) {
-    subset_detections <- filtered_detections[filtered_detections$recorder_id == recorder_id, , drop = FALSE]
+    subset_detections <- detections_by_recorder[[recorder_id]]
     subset_non_native_species_lookup <- non_native_species_lookup_detected[
       non_native_species_lookup_detected$scientific_name %in% subset_detections$scientific_name,
       ,
@@ -3576,10 +3669,11 @@ non_native_time_series_by_recorder <- do.call(
     ]
     subset_non_native <- build_selected_species_time_series(
       detections_subset = subset_detections,
-      summary_metadata_subset = summary_file_metadata[summary_file_metadata$recorder_id == recorder_id, , drop = FALSE],
+      summary_metadata_subset = metadata_by_recorder[[recorder_id]],
       species_lookup = subset_non_native_species_lookup,
       bin_minutes = top_species_time_bin_minutes,
-      timezone = analysis_timezone
+      timezone = analysis_timezone,
+      available_time_bins = top_species_time_bins_by_recorder[[recorder_id]]
     )
     subset_non_native$recorder_id <- recorder_id
     subset_non_native
@@ -3594,12 +3688,13 @@ non_native_time_series_by_recorder_positive <- non_native_time_series_by_recorde
 cumulative_new_species_by_recorder <- do.call(
   rbind,
   lapply(recorder_ids, function(recorder_id) {
-    subset_detections <- filtered_detections[filtered_detections$recorder_id == recorder_id, , drop = FALSE]
+    subset_detections <- detections_by_recorder[[recorder_id]]
     subset_cumulative <- build_cumulative_new_species_for_subset(
       detections_subset = subset_detections,
-      summary_metadata_subset = summary_file_metadata[summary_file_metadata$recorder_id == recorder_id, , drop = FALSE],
+      summary_metadata_subset = metadata_by_recorder[[recorder_id]],
       bin_minutes = bin_minutes,
-      timezone = analysis_timezone
+      timezone = analysis_timezone,
+      available_time_bins = available_time_bins_by_recorder[[recorder_id]]
     )
     subset_cumulative$recorder_id <- recorder_id
     subset_cumulative
@@ -3609,7 +3704,7 @@ cumulative_new_species_by_recorder <- do.call(
 species_counts_by_recorder <- do.call(
   rbind,
   lapply(recorder_ids, function(recorder_id) {
-    subset_detections <- filtered_detections[filtered_detections$recorder_id == recorder_id, , drop = FALSE]
+    subset_detections <- detections_by_recorder[[recorder_id]]
     subset_species_counts <- build_species_counts_for_subset(
       subset_detections,
       species_levels = global_species_levels,
@@ -3644,8 +3739,9 @@ species_counts_by_recorder_positive <- species_counts_by_recorder[
 species_counts_by_month_by_recorder <- do.call(
   rbind,
   lapply(recorder_ids, function(recorder_id) {
-    subset_detections <- filtered_detections[filtered_detections$recorder_id == recorder_id, , drop = FALSE]
-    subset_metadata <- summary_file_metadata[summary_file_metadata$recorder_id == recorder_id & !is.na(summary_file_metadata$local_date), , drop = FALSE]
+    subset_detections <- detections_by_recorder[[recorder_id]]
+    subset_metadata <- metadata_by_recorder[[recorder_id]]
+    subset_metadata <- subset_metadata[!is.na(subset_metadata$local_date), , drop = FALSE]
     subset_observed_months <- if (nrow(subset_metadata) > 0) {
       data.frame(
         month_num = as.integer(format(subset_metadata$local_date, "%m")),
@@ -3690,10 +3786,17 @@ temporal_diagnostics <- overall_temporal_bundle$diagnostics
 temporal_tests <- overall_temporal_bundle$tests
 temporal_peaks <- overall_temporal_bundle$peaks
 
-temporal_diagnostics_by_recorder <- bind_data_frames(
+temporal_bundles_by_recorder <- stats::setNames(
   lapply(recorder_ids, function(recorder_id) {
     subset_time_series <- time_series_by_recorder[time_series_by_recorder$recorder_id == recorder_id, , drop = FALSE]
-    subset_bundle <- build_temporal_diagnostics_bundle(subset_time_series, bin_minutes, periodicity_max_lag_bins)
+    build_temporal_diagnostics_bundle(subset_time_series, bin_minutes, periodicity_max_lag_bins)
+  }),
+  recorder_ids
+)
+
+temporal_diagnostics_by_recorder <- bind_data_frames(
+  lapply(recorder_ids, function(recorder_id) {
+    subset_bundle <- temporal_bundles_by_recorder[[recorder_id]]
     if (nrow(subset_bundle$diagnostics) == 0) {
       return(NULL)
     }
@@ -3705,8 +3808,7 @@ temporal_diagnostics_by_recorder <- bind_data_frames(
 
 temporal_tests_by_recorder <- bind_data_frames(
   lapply(recorder_ids, function(recorder_id) {
-    subset_time_series <- time_series_by_recorder[time_series_by_recorder$recorder_id == recorder_id, , drop = FALSE]
-    subset_bundle <- build_temporal_diagnostics_bundle(subset_time_series, bin_minutes, periodicity_max_lag_bins)
+    subset_bundle <- temporal_bundles_by_recorder[[recorder_id]]
     if (nrow(subset_bundle$tests) == 0) {
       return(NULL)
     }
@@ -3718,8 +3820,7 @@ temporal_tests_by_recorder <- bind_data_frames(
 
 temporal_peaks_by_recorder <- bind_data_frames(
   lapply(recorder_ids, function(recorder_id) {
-    subset_time_series <- time_series_by_recorder[time_series_by_recorder$recorder_id == recorder_id, , drop = FALSE]
-    subset_bundle <- build_temporal_diagnostics_bundle(subset_time_series, bin_minutes, periodicity_max_lag_bins)
+    subset_bundle <- temporal_bundles_by_recorder[[recorder_id]]
     if (nrow(subset_bundle$peaks) == 0) {
       return(NULL)
     }
