@@ -1,9 +1,9 @@
 # user-defined settings ----------------------------------------------------
 analysis_timezone <- "Australia/Adelaide"
 bin_minutes <- 60
-diversity_window_days <- 28L
-top_species_time_bin_minutes <- 4 * 7 * 24 * 60
-rolling_mean_window_days <- 14
+diversity_window_days <- 14L
+top_species_time_bin_minutes <- 2 * 7 * 24 * 60
+rolling_mean_window_days <- 7
 min_confidence <- 0.1
 periodicity_max_lag_bins <- 48L
 show_plots_in_session <- TRUE
@@ -3616,6 +3616,16 @@ species_counts_by_recorder <- do.call(
       species_lookup = species_counts,
       zero_fill = TRUE
     )
+    subset_species_labels <- as.character(subset_species_counts$species_label)
+    subset_positive_species_levels <- unique(subset_species_labels[subset_species_counts$identification_count > 0])
+    subset_all_species_levels <- c(
+      subset_positive_species_levels,
+      setdiff(subset_species_labels, subset_positive_species_levels)
+    )
+    subset_species_counts$species_label <- factor(
+      subset_species_labels,
+      levels = subset_all_species_levels
+    )
     subset_species_counts$recorder_id <- recorder_id
     subset_species_counts$identification_count_plot <- ifelse(
       subset_species_counts$identification_count > 0,
@@ -3652,8 +3662,8 @@ species_counts_by_month_by_recorder <- do.call(
       c("scientific_name", "common_name", "species_label"),
       drop = FALSE
     ]
-    subset_species_levels <- global_species_levels[global_species_levels %in% as.character(subset_species_lookup$species_label)]
     subset_species_lookup$species_label <- as.character(subset_species_lookup$species_label)
+    subset_species_levels <- unique(subset_species_lookup$species_label)
 
     subset_monthly_counts <- build_species_counts_by_month_for_subset(
       subset_detections,
@@ -5047,9 +5057,13 @@ for (recorder_id in recorder_ids) {
     ,
     drop = FALSE
   ]
-  recorder_species_levels <- global_species_levels[global_species_levels %in% as.character(recorder_species_counts$species_label)]
+  recorder_species_levels <- unique(as.character(recorder_species_counts$species_label))
   recorder_species_lookup <- species_label_plotmath_lookup[recorder_species_levels]
-  recorder_species_counts$species_label <- factor(as.character(recorder_species_counts$species_label), levels = recorder_species_levels)
+  recorder_species_plot_levels <- rev(recorder_species_levels)
+  recorder_species_counts$species_label <- factor(
+    as.character(recorder_species_counts$species_label),
+    levels = recorder_species_plot_levels
+  )
 
   recorder_species_by_month <- species_counts_by_month_by_recorder[
     species_counts_by_month_by_recorder$recorder_id == recorder_id,
@@ -5057,8 +5071,14 @@ for (recorder_id in recorder_ids) {
     drop = FALSE
   ]
   recorder_species_by_month_positive <- recorder_species_by_month[!is.na(recorder_species_by_month$identification_count_plot), , drop = FALSE]
-  recorder_species_by_month$species_label <- factor(as.character(recorder_species_by_month$species_label), levels = recorder_species_levels)
-  recorder_species_by_month_positive$species_label <- factor(as.character(recorder_species_by_month_positive$species_label), levels = recorder_species_levels)
+  recorder_species_by_month$species_label <- factor(
+    as.character(recorder_species_by_month$species_label),
+    levels = recorder_species_plot_levels
+  )
+  recorder_species_by_month_positive$species_label <- factor(
+    as.character(recorder_species_by_month_positive$species_label),
+    levels = recorder_species_plot_levels
+  )
 
   recorder_diversity_long <- monthly_diversity_long[monthly_diversity_long$recorder_id == recorder_id, , drop = FALSE]
   recorder_daily_incidence_diversity_long <- monthly_diversity_daily_incidence_long[
