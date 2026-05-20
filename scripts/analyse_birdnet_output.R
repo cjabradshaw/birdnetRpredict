@@ -2618,7 +2618,7 @@ build_species_composition_by_diversity_window_for_subset <- function(detections_
   fill_values <- c(fill_values, stats::setNames("grey70", other_species_label))
   label_lookup <- c(
     unname(species_plotmath_lookup[species_totals$species_label]),
-    stats::setNames("\"other species (<5%)\"", other_species_label)
+    stats::setNames("\"other species (< 10%)\"", other_species_label)
   )
   label_lookup <- stats::setNames(as.character(label_lookup), c(species_totals$species_label, other_species_label))
 
