@@ -290,6 +290,30 @@ colourblind_friendly_species_palette <- function(n) {
   grDevices::colorRampPalette(base_palette)(n)
 }
 
+recorder_comparison_style_values <- function(recorder_ids) {
+  recorder_ids <- unique(as.character(recorder_ids))
+
+  if (length(recorder_ids) == 0L) {
+    return(list(
+      colours = setNames(character(0), character(0)),
+      linetypes = setNames(character(0), character(0)),
+      linewidths = setNames(numeric(0), character(0))
+    ))
+  }
+
+  list(
+    colours = stats::setNames(colourblind_friendly_species_palette(length(recorder_ids)), recorder_ids),
+    linetypes = stats::setNames(
+      rep(c("solid", "longdash", "dashed", "dotdash", "twodash", "dotted"), length.out = length(recorder_ids)),
+      recorder_ids
+    ),
+    linewidths = stats::setNames(
+      rep(c(0.9, 1.1, 1.3, 1.5, 1.7), length.out = length(recorder_ids)),
+      recorder_ids
+    )
+  )
+}
+
 add_species_origin_columns <- function(data_frame, non_native_scientific_names) {
   if (!"scientific_name" %in% names(data_frame)) {
     return(data_frame)
@@ -3756,6 +3780,7 @@ recorder_colour_values <- stats::setNames(
   grDevices::hcl.colors(length(recorder_ids), palette = "Dark 3"),
   recorder_ids
 )
+recorder_comparison_style <- recorder_comparison_style_values(recorder_ids)
 recorder_output_root <- file.path(output_dir, "recorders")
 dir.create(recorder_output_root, recursive = TRUE, showWarnings = FALSE)
 detections_by_recorder <- split(filtered_detections, filtered_detections$recorder_id)
@@ -4529,11 +4554,30 @@ time_series_recorder_comparison_plot <- ggplot2::ggplot(
     x = time_bin,
     y = identification_count_running_mean_plot,
     colour = recorder_id,
+    linetype = recorder_id,
+    linewidth = recorder_id,
     group = recorder_id
   )
 ) +
-  ggplot2::geom_line(linewidth = 1) +
-  ggplot2::scale_colour_manual(values = recorder_colour_values, drop = FALSE) +
+  ggplot2::geom_line() +
+  ggplot2::scale_colour_manual(
+    values = recorder_comparison_style$colours,
+    breaks = recorder_ids,
+    drop = FALSE,
+    name = "recorder"
+  ) +
+  ggplot2::scale_linetype_manual(
+    values = recorder_comparison_style$linetypes,
+    breaks = recorder_ids,
+    drop = FALSE,
+    name = "recorder"
+  ) +
+  ggplot2::scale_linewidth_manual(
+    values = recorder_comparison_style$linewidths,
+    breaks = recorder_ids,
+    drop = FALSE,
+    name = "recorder"
+  ) +
   ggplot2::labs(
     title = "BirdNET identifications over time by recorder",
     subtitle = sprintf(
@@ -4542,8 +4586,7 @@ time_series_recorder_comparison_plot <- ggplot2::ggplot(
       min_confidence
     ),
     x = "time bin",
-    y = "identifications per bin running mean",
-    colour = "recorder"
+    y = "identifications per bin running mean"
   ) +
   analysis_plot_theme() +
   ggplot2::theme(legend.position = "top")
@@ -4554,17 +4597,35 @@ cumulative_species_recorder_comparison_plot <- ggplot2::ggplot(
     x = time_bin,
     y = cumulative_new_species_plot,
     colour = recorder_id,
+    linetype = recorder_id,
+    linewidth = recorder_id,
     group = recorder_id
   )
 ) +
-  ggplot2::geom_step(linewidth = 1) +
-  ggplot2::scale_colour_manual(values = recorder_colour_values, drop = FALSE) +
+  ggplot2::geom_step() +
+  ggplot2::scale_colour_manual(
+    values = recorder_comparison_style$colours,
+    breaks = recorder_ids,
+    drop = FALSE,
+    name = "recorder"
+  ) +
+  ggplot2::scale_linetype_manual(
+    values = recorder_comparison_style$linetypes,
+    breaks = recorder_ids,
+    drop = FALSE,
+    name = "recorder"
+  ) +
+  ggplot2::scale_linewidth_manual(
+    values = recorder_comparison_style$linewidths,
+    breaks = recorder_ids,
+    drop = FALSE,
+    name = "recorder"
+  ) +
   ggplot2::labs(
     title = "cumulative new species detected over time by recorder",
     subtitle = "comparison across recorders | gaps indicate no data",
     x = "time bin",
-    y = "cumulative number of new species",
-    colour = "recorder"
+    y = "cumulative number of new species"
   ) +
   analysis_plot_theme() +
   ggplot2::theme(legend.position = "top")
@@ -4575,12 +4636,31 @@ total_diversity_recorder_comparison_plot <- ggplot2::ggplot(
     x = diversity_window_start,
     y = hill_q1,
     colour = recorder_id,
+    linetype = recorder_id,
+    linewidth = recorder_id,
     group = recorder_id
   )
 ) +
-  ggplot2::geom_line(linewidth = 1) +
+  ggplot2::geom_line() +
   ggplot2::geom_point(size = 2) +
-  ggplot2::scale_colour_manual(values = recorder_colour_values, drop = FALSE) +
+  ggplot2::scale_colour_manual(
+    values = recorder_comparison_style$colours,
+    breaks = recorder_ids,
+    drop = FALSE,
+    name = "recorder"
+  ) +
+  ggplot2::scale_linetype_manual(
+    values = recorder_comparison_style$linetypes,
+    breaks = recorder_ids,
+    drop = FALSE,
+    name = "recorder"
+  ) +
+  ggplot2::scale_linewidth_manual(
+    values = recorder_comparison_style$linewidths,
+    breaks = recorder_ids,
+    drop = FALSE,
+    name = "recorder"
+  ) +
   ggplot2::labs(
     title = "total diversity over time by recorder",
     subtitle = sprintf(
@@ -4588,8 +4668,7 @@ total_diversity_recorder_comparison_plot <- ggplot2::ggplot(
       diversity_window_days
     ),
     x = "diversity window start",
-    y = "Hill number (q = 1)",
-    colour = "recorder"
+    y = "Hill number (q = 1)"
   ) +
   ggplot2::scale_x_date(date_labels = "%Y-%m") +
   analysis_plot_theme() +
@@ -4601,12 +4680,31 @@ hill_q2_recorder_comparison_plot <- ggplot2::ggplot(
     x = diversity_window_start,
     y = hill_q2,
     colour = recorder_id,
+    linetype = recorder_id,
+    linewidth = recorder_id,
     group = recorder_id
   )
 ) +
-  ggplot2::geom_line(linewidth = 1) +
+  ggplot2::geom_line() +
   ggplot2::geom_point(size = 2) +
-  ggplot2::scale_colour_manual(values = recorder_colour_values, drop = FALSE) +
+  ggplot2::scale_colour_manual(
+    values = recorder_comparison_style$colours,
+    breaks = recorder_ids,
+    drop = FALSE,
+    name = "recorder"
+  ) +
+  ggplot2::scale_linetype_manual(
+    values = recorder_comparison_style$linetypes,
+    breaks = recorder_ids,
+    drop = FALSE,
+    name = "recorder"
+  ) +
+  ggplot2::scale_linewidth_manual(
+    values = recorder_comparison_style$linewidths,
+    breaks = recorder_ids,
+    drop = FALSE,
+    name = "recorder"
+  ) +
   ggplot2::labs(
     title = "Hill number (q = 2) over time by recorder",
     subtitle = sprintf(
@@ -4614,8 +4712,7 @@ hill_q2_recorder_comparison_plot <- ggplot2::ggplot(
       diversity_window_days
     ),
     x = "diversity window start",
-    y = "Hill number (q = 2)",
-    colour = "recorder"
+    y = "Hill number (q = 2)"
   ) +
   ggplot2::scale_x_date(date_labels = "%Y-%m") +
   analysis_plot_theme() +
