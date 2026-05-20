@@ -397,6 +397,9 @@ The analysis workflow writes:
 - `birdnet_identifications_by_species_by_month_by_recorder.csv`  
   month-by-species summaries calculated separately for each recorder
 
+- `birdnet_species_composition_by_diversity_window_by_recorder.csv`  
+  recorder-specific species-composition summaries across user-defined diversity windows, retaining the species that cumulatively cover 95% of identifications within each window and pooling the remaining <5% into an `other species (<5%)` category
+
 - `birdnet_monthly_diversity_metrics.csv`  
   recorder-level diversity metrics calculated from detections-as-abundance across user-defined diversity windows, including Shannon index, Simpson index, and Hill numbers for <em>q</em> = 1 and <em>q</em> = 2
 
@@ -462,7 +465,7 @@ The analysis workflow writes:
 - `birdnet_cumulative_new_species_by_recorder.png`
 
 - `recorders/<RECORDER_ID>/...`  
-  recorder-specific figures written for each recorder that currently has usable detections (for example `recorders/GEL_A/`). Crowded recorder-level figures such as detections through time, identifications by species, identifications by species by month, diversity metrics, temporal periodicity diagnostics, and non-native-species time-series profiles are now written only here as separate recorder-specific figures rather than root-level multi-panel comparisons.
+  recorder-specific figures written for each recorder that currently has usable detections (for example `recorders/GEL_A/`). Crowded recorder-level figures such as detections through time, identifications by species, identifications by species by month, species composition by diversity window, diversity metrics, temporal periodicity diagnostics, and non-native-species time-series profiles are now written only here as separate recorder-specific figures rather than root-level multi-panel comparisons.
 
 In the species-frequency plots, the identification axis is shown on a log<sub>10</sub> scale, and common names are displayed in lowercase except where proper nouns remain capitalised. Latin names are italicised in the species-axis labels.
 The root-level analysis figures are the combined overall results across all recorders currently present in `out/`. A small set of simplified recorder-comparison plots is also written at the root level for direct cross-recorder comparison, while recorder-specific figures are written into the `recorders/` subdirectory as each recorder becomes available.

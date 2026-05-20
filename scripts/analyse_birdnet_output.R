@@ -267,6 +267,29 @@ species_origin_palette <- c(
   non_native = "firebrick2"
 )
 
+colourblind_friendly_species_palette <- function(n) {
+  base_palette <- c(
+    "#0072B2", # blue
+    "#E69F00", # orange
+    "#009E73", # bluish green
+    "#CC79A7", # reddish purple
+    "#56B4E9", # sky blue
+    "#D55E00", # vermillion
+    "#F0E442", # yellow
+    "#000000"  # black
+  )
+
+  if (n <= 0) {
+    return(character(0))
+  }
+
+  if (n <= length(base_palette)) {
+    return(base_palette[seq_len(n)])
+  }
+
+  grDevices::colorRampPalette(base_palette)(n)
+}
+
 add_species_origin_columns <- function(data_frame, non_native_scientific_names) {
   if (!"scientific_name" %in% names(data_frame)) {
     return(data_frame)
@@ -2460,6 +2483,152 @@ build_species_counts_by_month_for_subset <- function(detections_subset,
   species_counts_by_month
 }
 
+build_species_composition_by_diversity_window_for_subset <- function(detections_subset,
+                                                                     diversity_window_metadata_subset,
+                                                                     species_plotmath_lookup,
+                                                                     coverage_threshold = 0.90) {
+  other_species_label <- "other species (< 10%)"
+  empty_summary <- data.frame(
+    recorder_id = character(),
+    diversity_window_start = as.Date(character()),
+    diversity_window_end = as.Date(character()),
+    diversity_window_label = character(),
+    scientific_name = character(),
+    common_name = character(),
+    species_label = character(),
+    identification_count = integer(),
+    window_total_identifications = integer(),
+    identification_proportion = numeric(),
+    stringsAsFactors = FALSE
+  )
+
+  if (nrow(diversity_window_metadata_subset) == 0 || nrow(detections_subset) == 0) {
+    return(list(
+      summary = empty_summary,
+      label_lookup = c(stats::setNames(character(0), character(0)), stats::setNames("\"other species (< 10%)\"", other_species_label)),
+      fill_values = stats::setNames("grey70", other_species_label)
+    ))
+  }
+
+  species_counts <- aggregate(
+    list(identification_count = rep(1L, nrow(detections_subset))),
+    by = list(
+      recorder_id = detections_subset$recorder_id,
+      diversity_window_start = detections_subset$diversity_window_start,
+      diversity_window_end = detections_subset$diversity_window_end,
+      diversity_window_label = detections_subset$diversity_window_label,
+      scientific_name = detections_subset$scientific_name,
+      common_name = detections_subset$common_name,
+      species_label = detections_subset$species_label
+    ),
+    FUN = sum
+  )
+
+  if (nrow(species_counts) == 0) {
+    return(list(
+      summary = empty_summary,
+      label_lookup = c(stats::setNames(character(0), character(0)), stats::setNames("\"other species (< 10%)\"", other_species_label)),
+      fill_values = stats::setNames("grey70", other_species_label)
+    ))
+  }
+
+  window_totals <- aggregate(
+    list(window_total_identifications = species_counts$identification_count),
+    by = list(
+      recorder_id = species_counts$recorder_id,
+      diversity_window_start = species_counts$diversity_window_start,
+      diversity_window_end = species_counts$diversity_window_end,
+      diversity_window_label = species_counts$diversity_window_label
+    ),
+    FUN = sum
+  )
+  species_counts <- merge(
+    species_counts,
+    window_totals,
+    by = c("recorder_id", "diversity_window_start", "diversity_window_end", "diversity_window_label"),
+    all.x = TRUE
+  )
+  species_counts <- species_counts[species_counts$window_total_identifications > 0, , drop = FALSE]
+
+  composition_rows <- lapply(
+    split(species_counts, interaction(species_counts$recorder_id, species_counts$diversity_window_start, drop = TRUE)),
+    function(group_df) {
+      group_df <- group_df[order(-group_df$identification_count, group_df$species_label), , drop = FALSE]
+      total_identifications <- group_df$window_total_identifications[[1]]
+      cumulative_before <- c(0, head(cumsum(group_df$identification_count), -1)) / total_identifications
+      keep_rows <- cumulative_before < coverage_threshold
+      kept_df <- group_df[keep_rows, , drop = FALSE]
+      kept_df$identification_proportion <- kept_df$identification_count / total_identifications
+
+      if (any(!keep_rows)) {
+        other_count <- sum(group_df$identification_count[!keep_rows])
+        kept_df <- bind_rows_list(
+          list(
+            kept_df,
+            data.frame(
+              recorder_id = group_df$recorder_id[[1]],
+              diversity_window_start = as.Date(group_df$diversity_window_start[[1]]),
+              diversity_window_end = as.Date(group_df$diversity_window_end[[1]]),
+              diversity_window_label = as.character(group_df$diversity_window_label[[1]]),
+              scientific_name = NA_character_,
+              common_name = NA_character_,
+              species_label = other_species_label,
+              identification_count = as.integer(other_count),
+              window_total_identifications = as.integer(total_identifications),
+              identification_proportion = other_count / total_identifications,
+              stringsAsFactors = FALSE
+            )
+          )
+        )
+      }
+
+      kept_df
+    }
+  )
+
+  composition_summary <- bind_rows_list(composition_rows, empty_template = empty_summary)
+  if (nrow(composition_summary) == 0) {
+    return(list(
+      summary = empty_summary,
+      label_lookup = c(stats::setNames(character(0), character(0)), stats::setNames("\"other species (< 10%)\"", other_species_label)),
+      fill_values = stats::setNames("grey70", other_species_label)
+    ))
+  }
+
+  species_totals <- aggregate(
+    list(total_identifications = composition_summary$identification_count),
+    by = list(species_label = composition_summary$species_label),
+    FUN = sum
+  )
+  species_totals <- species_totals[species_totals$species_label != other_species_label, , drop = FALSE]
+  species_totals <- species_totals[order(-species_totals$total_identifications, species_totals$species_label), , drop = FALSE]
+  species_levels <- c(species_totals$species_label, other_species_label)
+  composition_summary$species_label <- factor(
+    composition_summary$species_label,
+    levels = species_levels
+  )
+  composition_summary <- composition_summary[
+    order(composition_summary$diversity_window_start, match(as.character(composition_summary$species_label), species_levels)),
+    ,
+    drop = FALSE
+  ]
+
+  fill_values <- colourblind_friendly_species_palette(length(species_totals$species_label))
+  fill_values <- stats::setNames(fill_values, species_totals$species_label)
+  fill_values <- c(fill_values, stats::setNames("grey70", other_species_label))
+  label_lookup <- c(
+    unname(species_plotmath_lookup[species_totals$species_label]),
+    stats::setNames("\"other species (<5%)\"", other_species_label)
+  )
+  label_lookup <- stats::setNames(as.character(label_lookup), c(species_totals$species_label, other_species_label))
+
+  list(
+    summary = composition_summary,
+    label_lookup = label_lookup,
+    fill_values = fill_values
+  )
+}
+
 empty_temporal_diagnostics_df <- function() {
   data.frame(
     metric_name = character(),
@@ -3997,6 +4166,31 @@ overall_diversity_window_metadata <- build_diversity_window_metadata(
 )
 diversity_no_data_bands <- build_no_data_window_bands(overall_diversity_window_metadata)
 diversity_no_data_bands_by_recorder <- build_no_data_window_bands(diversity_window_metadata, group_columns = "recorder_id")
+diversity_window_metadata_by_recorder <- split(diversity_window_metadata, diversity_window_metadata$recorder_id)
+species_composition_by_diversity_window_by_recorder <- bind_rows_list(
+  lapply(recorder_ids, function(recorder_id) {
+    composition_bundle <- build_species_composition_by_diversity_window_for_subset(
+      detections_subset = detections_by_recorder[[recorder_id]],
+      diversity_window_metadata_subset = diversity_window_metadata_by_recorder[[recorder_id]],
+      species_plotmath_lookup = species_label_plotmath_lookup,
+      coverage_threshold = 0.90
+    )
+    composition_bundle$summary
+  }),
+  empty_template = data.frame(
+    recorder_id = character(),
+    diversity_window_start = as.Date(character()),
+    diversity_window_end = as.Date(character()),
+    diversity_window_label = character(),
+    scientific_name = character(),
+    common_name = character(),
+    species_label = character(),
+    identification_count = integer(),
+    window_total_identifications = integer(),
+    identification_proportion = numeric(),
+    stringsAsFactors = FALSE
+  )
+)
 
 monthly_diversity_summary <- build_monthly_diversity_summary(
   filtered_detections = filtered_detections,
@@ -4105,6 +4299,7 @@ species_counts_csv <- file.path(output_dir, "birdnet_identifications_by_species.
 species_counts_by_recorder_csv <- file.path(output_dir, "birdnet_identifications_by_species_by_recorder.csv")
 species_counts_by_month_csv <- file.path(output_dir, "birdnet_identifications_by_species_by_month.csv")
 species_counts_by_month_by_recorder_csv <- file.path(output_dir, "birdnet_identifications_by_species_by_month_by_recorder.csv")
+species_composition_by_diversity_window_by_recorder_csv <- file.path(output_dir, "birdnet_species_composition_by_diversity_window_by_recorder.csv")
 monthly_diversity_csv <- file.path(output_dir, "birdnet_monthly_diversity_metrics.csv")
 overall_monthly_diversity_csv <- file.path(output_dir, "birdnet_monthly_diversity_metrics_overall.csv")
 monthly_diversity_daily_incidence_csv <- file.path(output_dir, "birdnet_monthly_diversity_metrics_daily_incidence.csv")
@@ -4141,6 +4336,7 @@ write.csv(species_counts, species_counts_csv, row.names = FALSE)
 write.csv(species_counts_by_recorder, species_counts_by_recorder_csv, row.names = FALSE)
 write.csv(species_counts_by_month, species_counts_by_month_csv, row.names = FALSE)
 write.csv(species_counts_by_month_by_recorder, species_counts_by_month_by_recorder_csv, row.names = FALSE)
+write.csv(species_composition_by_diversity_window_by_recorder, species_composition_by_diversity_window_by_recorder_csv, row.names = FALSE)
 write.csv(monthly_diversity_summary, monthly_diversity_csv, row.names = FALSE)
 write.csv(overall_monthly_diversity_summary, overall_monthly_diversity_csv, row.names = FALSE)
 write.csv(monthly_diversity_daily_incidence_summary, monthly_diversity_daily_incidence_csv, row.names = FALSE)
@@ -5270,6 +5466,7 @@ for (recorder_id in recorder_ids) {
     ,
     drop = FALSE
   ]
+  recorder_diversity_window_metadata <- diversity_window_metadata_by_recorder[[recorder_id]]
   recorder_light_phase_bands <- by_recorder_light_phase_bands[
     by_recorder_light_phase_bands$recorder_id == recorder_id,
     ,
@@ -5422,6 +5619,65 @@ for (recorder_id in recorder_ids) {
       axis.text.y = ggplot2::element_text(size = 8.4),
       panel.grid.minor = ggplot2::element_blank()
     )
+
+  recorder_species_composition_bundle <- build_species_composition_by_diversity_window_for_subset(
+    detections_subset = detections_by_recorder[[recorder_id]],
+    diversity_window_metadata_subset = recorder_diversity_window_metadata,
+    species_plotmath_lookup = species_label_plotmath_lookup,
+    coverage_threshold = 0.90
+  )
+  recorder_species_composition <- recorder_species_composition_bundle$summary
+  recorder_species_composition_label_parser <- build_species_label_parser(recorder_species_composition_bundle$label_lookup)
+
+  if (nrow(recorder_species_composition) > 0) {
+    recorder_species_composition_plot <- ggplot2::ggplot(
+      recorder_species_composition,
+      ggplot2::aes(
+        x = diversity_window_start,
+        y = identification_count,
+        fill = species_label
+      )
+    ) +
+      ggplot2::geom_rect(
+        data = recorder_diversity_no_data_bands,
+        ggplot2::aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf),
+        inherit.aes = FALSE,
+        fill = "grey82",
+        alpha = 0.35
+      ) +
+      ggplot2::geom_col(
+        position = "fill",
+        width = diversity_window_days * 0.9
+      ) +
+      ggplot2::scale_fill_manual(
+        values = recorder_species_composition_bundle$fill_values,
+        breaks = levels(recorder_species_composition$species_label),
+        labels = recorder_species_composition_label_parser,
+        drop = FALSE
+      ) +
+      ggplot2::scale_x_date(date_labels = "%Y-%m") +
+      ggplot2::scale_y_continuous(
+        labels = scales::label_percent(accuracy = 1),
+        expand = ggplot2::expansion(mult = c(0, 0.02))
+      ) +
+      ggplot2::labs(
+        title = sprintf("species composition by diversity window: %s", recorder_id),
+        subtitle = sprintf(
+          "%d-day windows | coloured species cumulatively cover 90%% of identifications per window | grey bands = no data",
+          diversity_window_days
+        ),
+        x = "diversity window start",
+        y = "proportion of identifications",
+        fill = "species"
+      ) +
+      top_species_plot_theme()
+  } else {
+    recorder_species_composition_plot <- make_placeholder_plot(
+      title_text = sprintf("species composition by diversity window: %s", recorder_id),
+      subtitle_text = sprintf("%d-day windows", diversity_window_days),
+      body_text = "not enough detections are currently available to build a recorder-specific composition summary."
+    )
+  }
 
   recorder_diversity_plot <- ggplot2::ggplot(
     recorder_diversity_long,
@@ -5580,6 +5836,7 @@ for (recorder_id in recorder_ids) {
     print(recorder_cumulative_plot)
     print(recorder_species_plot)
     print(recorder_species_by_month_plot)
+    print(recorder_species_composition_plot)
     print(recorder_diversity_plot)
     print(recorder_daily_incidence_diversity_plot)
     print(recorder_top_species_plot)
@@ -5592,6 +5849,7 @@ for (recorder_id in recorder_ids) {
   ggplot2::ggsave(file.path(recorder_dir, "birdnet_cumulative_new_species.png"), recorder_cumulative_plot, width = 12, height = 7, dpi = 150)
   ggplot2::ggsave(file.path(recorder_dir, "birdnet_identifications_by_species.png"), recorder_species_plot, width = 13, height = 10, dpi = 150)
   ggplot2::ggsave(file.path(recorder_dir, "birdnet_identifications_by_species_by_month.png"), recorder_species_by_month_plot, width = 16, height = 12, dpi = 150)
+  ggplot2::ggsave(file.path(recorder_dir, "birdnet_species_composition_by_diversity_window.png"), recorder_species_composition_plot, width = 15, height = 8, dpi = 150)
   ggplot2::ggsave(file.path(recorder_dir, "birdnet_monthly_diversity_metrics.png"), recorder_diversity_plot, width = 14, height = 10, dpi = 150)
   ggplot2::ggsave(file.path(recorder_dir, "birdnet_monthly_diversity_metrics_daily_incidence.png"), recorder_daily_incidence_diversity_plot, width = 14, height = 10, dpi = 150)
   ggplot2::ggsave(file.path(recorder_dir, "birdnet_top_10_species_detections_through_time.png"), recorder_top_species_plot, width = 14, height = 8, dpi = 150)
