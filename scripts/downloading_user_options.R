@@ -1,7 +1,7 @@
 # user-defined download settings --------------------------------------------
-source_mode <- "archive"  # "archive" or "ecosounds"
+source_mode <- "ecosounds"  # "archive" or "ecosounds"
 
-archive_file <- "/Volumes/brad0317/Documents/acoustic/GEL_D/GEL_D19082025_25102025.tar.zst"
+archive_file <- "/Volumes/bradshaw/acoustic/GEL_A/GEL_A202508202025_12312025.tar.zst"
 
 ecosounds_workbench_url <- "https://api.ecosounds.org"
 ecosounds_project_id <- 1281L
@@ -12,7 +12,7 @@ ecosounds_project_id <- 1281L
 # GEL_C is site 7240
 # GEL_D is site 7241
 # GEL_E is site 7242
-ecosounds_recorder_id <- 7241L
+ecosounds_recorder_id <- 7238L
 ecosounds_recorder_name <- ""  # exact EcoSounds site/recorder name; use this instead of ecosounds_recorder_id if preferred
 ecosounds_download_method <- "api_then_powershell"  # "api", "powershell", or "api_then_powershell"
 ecosounds_powershell_script <- "/Users/brad0317/Downloads/download_audio_files.ps1"
