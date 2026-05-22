@@ -151,7 +151,7 @@ That file is combined with the BirdNET location/week range model to reduce false
 
 ## Requirements
 
-- R packages: <code>birdnetR</code>, <code>processx</code>, <code>callr</code>, <code>jsonlite</code>
+- R packages: <code>birdnetR</code>, <code>processx</code>, <code>callr</code>, <code>jsonlite</code>, <code>galah</code>
 - casks: <code>ffmpeg</code>, <code>tar</code> with <code>--zstd</code> support, <code>zstd</code>
 
 The current environment also expects BirdNET's Python dependencies to be installable through <a href="https://github.com/birdnet-team/birdnetR"><code>birdnetR</code></a>.
@@ -236,8 +236,37 @@ Edit the user-defined settings directly near the top of the script:
 - `min_confidence`
 - `periodicity_max_lag_bins`
 - `show_plots_in_session`
+- `ala_sanity_check_enabled`
+- `ala_auth_mode`
+- `ala_match_radius_km`
+- `ala_min_local_occurrence_records`
+- `ala_download_reason_id`
+- `ala_user_name`
+- `ala_email`
+- `ala_password`
+- `diel_sanity_check_enabled`
+- `diel_sanity_check_remove_improbable`
+- `xeno_canto_api_key`
+- `diel_min_reference_record_count`
+- `diel_xeno_canto_per_page`
+- `diel_inaturalist_per_page`
 
-These control which existing summary CSVs are included, where the analysis outputs are written, the temporal bin size used by the plots, the diversity-analysis window length, and the minimum confidence required for a detection to be counted.
+These control which existing summary CSVs are included, where the analysis outputs are written, the temporal bin size used by the plots, the diversity-analysis window length, and the minimum confidence required for a detection to be counted. The <a href="http://www.ala.org.au">Atlas of Living Australia</a> (ALA) settings control an optional pre-plot sanity check using <a href="https://galah.ala.org.au/R/"><code>galah</code></a>, which flags species as potentially suspicious when no ALA records are found within the configured radius of any recorder, or when only a few nearby records are returned. The online diel settings control an optional pre-summary filter that queries public bird-sound sources directly to identify detections that occur in an unlikely light phase.
+
+For the ALA sanity check, you can either:
+
+- switch to `ala_auth_mode <- "ala"` and provide `ALA_EMAIL` (optionally `ALA_USERNAME` / `ALA_PASSWORD`) or edit the script settings directly
+- switch to `ala_auth_mode <- "prompt"` in an interactive R session to be prompted for credentials at runtime
+
+The current `galah` interface to the ALA uses a registered email address; username and password fields are retained here so the settings remain explicit and compatible with the requested workflow.
+
+For the online diel sanity check:
+
+- set `XENO_CANTO_API_KEY` in your shell or assign `xeno_canto_api_key` near the top of `scripts/analyse_birdnet_output.R`
+- the script queries `xeno-canto` first for each detected species
+- if `xeno-canto` returns no matches, the script falls back to `iNaturalist` sound observations
+
+The script classifies returned source records into `daylight`, `twilight`, and `night` using each source record's date, time, and coordinates. `xeno-canto` does not publish a timezone field, so its source-side light-phase classification uses a longitude-based timezone estimate; `iNaturalist` uses the observation timezone when available. If `diel_sanity_check_remove_improbable <- TRUE`, BirdNET detections in a light phase not supported by the chosen online source are removed before downstream summaries and plots are built. To avoid over-filtering from very sparse public records, a species is only assessed when at least `diel_min_reference_record_count` usable source records are available.
 
 ## How to run
 
@@ -400,6 +429,18 @@ The analysis workflow writes:
 - `birdnet_species_composition_by_diversity_window_by_recorder.csv`  
   recorder-specific species-composition summaries across user-defined diversity windows, retaining the species that cumulatively cover 95% of identifications within each window and pooling the remaining <5% into an `other species (<5%)` category
 
+- `birdnet_online_diel_sanity_check.csv`  
+  species-level online diel sanity summary, including the source used (`xeno-canto` or `iNaturalist`), public-source record counts by light phase, check status, and counts of detections flagged or removed as improbable for their light phase
+
+- `birdnet_online_diel_removed_detections.csv`  
+  detection-level audit table listing each BirdNET detection removed by the online diel sanity filter, together with the matched source taxon and expected calling phases
+
+- `birdnet_ala_species_sanity_check.csv`  
+  species-level Atlas of Living Australia sanity-check summary, including nearby-record counts, check status, and a `TRUE`/`FALSE` flag for potentially suspicious identifications that are rare or unsupported within the configured recorder-region radius
+
+- `birdnet_ala_occurrence_counts_by_recorder.csv`  
+  raw recorder-by-species Atlas of Living Australia occurrence counts returned within the configured radius around each recorder reference location, plus any query status or error message
+
 - `birdnet_monthly_diversity_metrics.csv`  
   recorder-level diversity metrics calculated from detections-as-abundance across user-defined diversity windows, including Shannon index, Simpson index, and Hill numbers for <em>q</em> = 1 and <em>q</em> = 2
 
@@ -470,6 +511,8 @@ The analysis workflow writes:
 In the species-frequency plots, the identification axis is shown on a log<sub>10</sub> scale, and common names are displayed in lowercase except where proper nouns remain capitalised. Latin names are italicised in the species-axis labels.
 The root-level analysis figures are the combined overall results across all recorders currently present in `out/`. A small set of simplified recorder-comparison plots is also written at the root level for direct cross-recorder comparison, while recorder-specific figures are written into the `recorders/` subdirectory as each recorder becomes available.
 The detections-over-time plots now include two versions: a log<sub>10</sub>-scale plot with black bars and a red trailing running mean controlled by `rolling_mean_window_days`, and a separate linear-scale plot with black bars only and no running mean. The linear-scale versions include low-alpha background bands showing local morning twilight (pink), daylight (yellow), evening twilight (pink), and night (dark blue).
+Before downstream summaries and plots are built, detections can optionally be checked against public online bird-sound evidence. The script queries `xeno-canto` first and falls back to `iNaturalist` sound observations only when `xeno-canto` has no matches for that species. If a species is marked as unlikely to call during the detected light phase (`daylight`, `twilight`, or `night`), the detection is written to the online removal-audit CSV and removed from the analysis when `diel_sanity_check_remove_improbable <- TRUE`.
+Before the analysis plots are built, detected species can optionally be checked against Atlas of Living Australia occurrence records using the <code>galah</code> package. This check searches for records within a user-defined radius (default 200 km) of the recorder reference locations, flags species with no nearby records or only very small nearby record counts as potentially suspicious, and writes those flags to the ALA sanity-check CSV outputs without removing any BirdNET detections from the analysis.
 The count-based diversity metrics treat the number of detections per species as the abundance proxy for Shannon, Simpson, and Hill-number calculations, and are produced across user-defined diversity windows set with `diversity_window_days`. A parallel daily-incidence diversity summary is also written, and raw species richness is summarized across those same diversity windows in a separate plot/table.
 The top-species time-series plots default to 24-hour bins through `top_species_time_bin_minutes <- 24 × 60`, but that bin size can be changed directly in `scripts/analyse_birdnet_output.R`.
 In the recorder-comparison diversity figure, each recorder-by-metric panel now uses its own y-axis range so Shannon, Simpson, and Hill-number panels are scaled to their local maxima.
