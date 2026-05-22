@@ -263,6 +263,7 @@ The current `galah` interface to the ALA uses a registered email address; userna
 For the online diel sanity check:
 
 - set `XENO_CANTO_API_KEY` in your shell or assign `xeno_canto_api_key` near the top of `scripts/analyse_birdnet_output.R`
+- if you run `scripts/analyse_birdnet_output.R` interactively in RStudio and leave `xeno_canto_api_key` blank, the script will prompt once for the key inside the R session
 - the script queries `xeno-canto` first for each detected species
 - if `xeno-canto` returns no matches, the script falls back to `iNaturalist` sound observations
 

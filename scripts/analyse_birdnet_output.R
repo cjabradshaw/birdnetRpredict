@@ -4,7 +4,7 @@ bin_minutes <- 60
 diversity_window_days <- 14L
 top_species_time_bin_minutes <- 2 * 7 * 24 * 60
 rolling_mean_window_days <- 7
-min_confidence <- 0.1
+min_confidence <- 0.5
 periodicity_max_lag_bins <- 48L
 ala_sanity_check_enabled <- TRUE
 ala_auth_mode <- "prompt"  # "ala", "prompt", or "none"
@@ -380,11 +380,11 @@ query_xeno_canto_reference_records <- function(scientific_name, api_key, per_pag
     ))
   }
 
-  resolved_key <- resolve_xeno_canto_api_key(api_key)
-  if (!nzchar(resolved_key)) {
+  api_key <- trimws(as.character(api_key)[1])
+  if (!nzchar(api_key)) {
     return(list(
       status = "missing_api_key",
-      message = "No xeno-canto API key was supplied. Set XENO_CANTO_API_KEY or provide the key interactively.",
+      message = "No xeno-canto API key was supplied. Set XENO_CANTO_API_KEY or provide the key in the interactive R session.",
       records = data.frame()
     ))
   }
@@ -394,7 +394,7 @@ query_xeno_canto_reference_records <- function(scientific_name, api_key, per_pag
     "https://xeno-canto.org/api/3/recordings?query=",
     utils::URLencode(query_string, reserved = TRUE),
     "&key=",
-    utils::URLencode(resolved_key, reserved = TRUE),
+    utils::URLencode(api_key, reserved = TRUE),
     "&per_page=",
     as.integer(per_page)
   )
@@ -415,19 +415,20 @@ query_xeno_canto_reference_records <- function(scientific_name, api_key, per_pag
 
   reference_records <- data.frame(
     source_system = "xeno-canto",
-    source_scientific_name = if ("gen" %in% names(recordings_df) && "sp" %in% names(recordings_df)) {
+    source_scientific_name = unname(if ("gen" %in% names(recordings_df) && "sp" %in% names(recordings_df)) {
       trimws(paste(recordings_df$gen, recordings_df$sp))
     } else {
       rep(trimws(as.character(scientific_name)), nrow(recordings_df))
-    },
-    source_common_name = if ("en" %in% names(recordings_df)) vapply(recordings_df$en, normalise_common_name, character(1)) else rep("", nrow(recordings_df)),
-    local_date = as.Date(if ("date" %in% names(recordings_df)) recordings_df$date else NA_character_),
-    local_time = if ("time" %in% names(recordings_df)) vapply(recordings_df$time, normalise_clock_time, character(1)) else NA_character_,
-    latitude = suppressWarnings(as.numeric(if ("lat" %in% names(recordings_df)) recordings_df$lat else NA_real_)),
-    longitude = suppressWarnings(as.numeric(if ("lon" %in% names(recordings_df)) recordings_df$lon else NA_real_)),
-    timezone_name = if ("lon" %in% names(recordings_df)) vapply(suppressWarnings(as.numeric(recordings_df$lon)), guess_timezone_from_longitude, character(1)) else rep("UTC", nrow(recordings_df)),
-    reference_url = if ("url" %in% names(recordings_df)) vapply(recordings_df$url, normalise_source_url, character(1)) else rep("", nrow(recordings_df)),
-    stringsAsFactors = FALSE
+    }),
+    source_common_name = unname(if ("en" %in% names(recordings_df)) vapply(recordings_df$en, normalise_common_name, character(1)) else rep("", nrow(recordings_df))),
+    local_date = unname(as.Date(if ("date" %in% names(recordings_df)) recordings_df$date else NA_character_)),
+    local_time = unname(if ("time" %in% names(recordings_df)) vapply(recordings_df$time, normalise_clock_time, character(1)) else rep(NA_character_, nrow(recordings_df))),
+    latitude = unname(suppressWarnings(as.numeric(if ("lat" %in% names(recordings_df)) recordings_df$lat else NA_real_))),
+    longitude = unname(suppressWarnings(as.numeric(if ("lon" %in% names(recordings_df)) recordings_df$lon else NA_real_))),
+    timezone_name = unname(if ("lon" %in% names(recordings_df)) vapply(suppressWarnings(as.numeric(recordings_df$lon)), guess_timezone_from_longitude, character(1)) else rep("UTC", nrow(recordings_df))),
+    reference_url = unname(if ("url" %in% names(recordings_df)) vapply(recordings_df$url, normalise_source_url, character(1)) else rep("", nrow(recordings_df))),
+    stringsAsFactors = FALSE,
+    row.names = NULL
   )
 
   list(status = "ok", message = "", records = classify_reference_record_light_phases(reference_records))
@@ -480,15 +481,16 @@ query_inaturalist_reference_records <- function(scientific_name, per_page) {
 
   reference_records <- data.frame(
     source_system = "iNaturalist",
-    source_scientific_name = if ("taxon.name" %in% names(results_df)) trimws(as.character(results_df$taxon.name)) else rep(trimws(as.character(scientific_name)), nrow(results_df)),
-    source_common_name = if ("taxon.preferred_common_name" %in% names(results_df)) vapply(results_df$taxon.preferred_common_name, normalise_common_name, character(1)) else rep("", nrow(results_df)),
-    local_date = as.Date(substr(as.character(results_df$time_observed_at), 1, 10)),
-    local_time = vapply(substr(as.character(results_df$time_observed_at), 12, 19), normalise_clock_time, character(1)),
-    latitude = latitudes,
-    longitude = longitudes,
-    timezone_name = timezone_names,
-    reference_url = if ("uri" %in% names(results_df)) as.character(results_df$uri) else rep("", nrow(results_df)),
-    stringsAsFactors = FALSE
+    source_scientific_name = unname(if ("taxon.name" %in% names(results_df)) trimws(as.character(results_df$taxon.name)) else rep(trimws(as.character(scientific_name)), nrow(results_df))),
+    source_common_name = unname(if ("taxon.preferred_common_name" %in% names(results_df)) vapply(results_df$taxon.preferred_common_name, normalise_common_name, character(1)) else rep("", nrow(results_df))),
+    local_date = unname(as.Date(substr(as.character(results_df$time_observed_at), 1, 10))),
+    local_time = unname(vapply(substr(as.character(results_df$time_observed_at), 12, 19), normalise_clock_time, character(1))),
+    latitude = unname(latitudes),
+    longitude = unname(longitudes),
+    timezone_name = unname(timezone_names),
+    reference_url = unname(if ("uri" %in% names(results_df)) as.character(results_df$uri) else rep("", nrow(results_df))),
+    stringsAsFactors = FALSE,
+    row.names = NULL
   )
 
   list(status = "ok", message = "", records = classify_reference_record_light_phases(reference_records))
@@ -4526,6 +4528,8 @@ if (!is.numeric(diel_inaturalist_per_page) || length(diel_inaturalist_per_page) 
   stop("diel_inaturalist_per_page must be a single positive integer")
 }
 
+xeno_canto_api_key <- resolve_xeno_canto_api_key(xeno_canto_api_key)
+
 if (!is.numeric(rolling_mean_window_days) || length(rolling_mean_window_days) != 1 ||
     is.na(rolling_mean_window_days) || rolling_mean_window_days <= 0) {
   stop("rolling_mean_window_days must be a single positive number")
@@ -5532,6 +5536,28 @@ species_counts_by_month_by_recorder <- append_online_diel_sanity_columns(species
 non_native_species_summary <- append_online_diel_sanity_columns(non_native_species_summary, online_diel_species_sanity_summary)
 recorder_reference_locations <- build_recorder_reference_locations(summary_file_metadata)
 ala_cache_dir <- file.path(output_dir, ".galah-cache")
+ala_species_sanity_summary <- species_counts[, c("scientific_name", "common_name", "species_label", "identification_count"), drop = FALSE]
+ala_species_sanity_summary$ala_email_used <- ""
+ala_species_sanity_summary$ala_match_radius_km <- ala_match_radius_km
+ala_species_sanity_summary$ala_min_local_occurrence_records <- as.integer(ala_min_local_occurrence_records)
+ala_species_sanity_summary$ala_total_local_occurrence_count <- NA_real_
+ala_species_sanity_summary$ala_max_local_occurrence_count <- NA_real_
+ala_species_sanity_summary$ala_recorder_count_with_local_records <- NA_integer_
+ala_species_sanity_summary$ala_query_status <- "not_run"
+ala_species_sanity_summary$ala_query_message <- ""
+ala_species_sanity_summary$ala_sanity_status <- "not_run"
+ala_species_sanity_summary$ala_potentially_suspicious <- NA
+ala_occurrence_counts_by_recorder <- data.frame(
+  recorder_id = character(),
+  recording_latitude = numeric(),
+  recording_longitude = numeric(),
+  query_radius_km = numeric(),
+  scientific_name = character(),
+  ala_occurrence_count = numeric(),
+  query_status = character(),
+  query_message = character(),
+  stringsAsFactors = FALSE
+)
 ala_sanity_check <- tryCatch(
   build_ala_species_sanity_check(
     species_counts = species_counts,
@@ -5547,7 +5573,7 @@ ala_sanity_check <- tryCatch(
     enabled = ala_sanity_check_enabled
   ),
   error = function(error) {
-    fallback_summary <- species_counts[, c("scientific_name", "common_name", "species_label", "identification_count"), drop = FALSE]
+    fallback_summary <- ala_species_sanity_summary
     fallback_summary$ala_email_used <- ""
     fallback_summary$ala_match_radius_km <- ala_match_radius_km
     fallback_summary$ala_min_local_occurrence_records <- as.integer(ala_min_local_occurrence_records)
@@ -5561,22 +5587,16 @@ ala_sanity_check <- tryCatch(
 
     list(
       summary = fallback_summary,
-      by_recorder = data.frame(
-        recorder_id = character(),
-        recording_latitude = numeric(),
-        recording_longitude = numeric(),
-        query_radius_km = numeric(),
-        scientific_name = character(),
-        ala_occurrence_count = numeric(),
-        query_status = character(),
-        query_message = character(),
-        stringsAsFactors = FALSE
-      )
+      by_recorder = ala_occurrence_counts_by_recorder
     )
   }
 )
-ala_species_sanity_summary <- ala_sanity_check$summary
-ala_occurrence_counts_by_recorder <- ala_sanity_check$by_recorder
+if (is.list(ala_sanity_check) && "summary" %in% names(ala_sanity_check)) {
+  ala_species_sanity_summary <- ala_sanity_check$summary
+}
+if (is.list(ala_sanity_check) && "by_recorder" %in% names(ala_sanity_check)) {
+  ala_occurrence_counts_by_recorder <- ala_sanity_check$by_recorder
+}
 species_counts <- append_ala_sanity_columns(species_counts, ala_species_sanity_summary)
 species_counts_by_recorder <- append_ala_sanity_columns(species_counts_by_recorder, ala_species_sanity_summary)
 species_counts_by_month <- append_ala_sanity_columns(species_counts_by_month, ala_species_sanity_summary)
