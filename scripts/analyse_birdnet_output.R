@@ -698,6 +698,7 @@ build_online_diel_sanity_check <- function(detections,
     by = c("scientific_name", "common_name", "species_label"),
     all.x = TRUE
   )
+  species_reference$diel_filter_applied <- isTRUE(remove_improbable)
 
   annotated_detections <- detections
   match_index <- match(annotated_detections$scientific_name, species_reference$scientific_name)
@@ -820,6 +821,7 @@ build_online_diel_sanity_check <- function(detections,
   )
 
   removed_detections <- improbable_rows[
+    ,
     c(
       "date_time",
       "recorder_id",
