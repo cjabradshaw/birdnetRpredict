@@ -255,19 +255,18 @@ These control which existing summary CSVs are included, where the analysis outpu
 
 For the ALA sanity check, you can either:
 
-- switch to `ala_auth_mode <- "ala"` and provide `ALA_EMAIL` (optionally `ALA_USERNAME` / `ALA_PASSWORD`) or edit the script settings directly
-- switch to `ala_auth_mode <- "prompt"` in an interactive R session to be prompted for credentials at runtime
+- use `ala_auth_mode <- "ala"` and provide `ALA_EMAIL` (optionally `ALA_USERNAME` / `ALA_PASSWORD`) through `Sys.setenv(...)` or by editing the script settings directly
+- use `ala_auth_mode <- "none"` to skip the ALA check entirely
 
-The current `galah` interface to the ALA uses a registered email address; username and password fields are retained here so the settings remain explicit and compatible with the requested workflow.
+The current `galah` interface to the ALA uses a registered email address; username, and password fields are retained here so the settings remain explicit and compatible with the requested workflow.
 
 For the online diel sanity check:
 
-- set `XENO_CANTO_API_KEY` in your shell or assign `xeno_canto_api_key` near the top of `scripts/analyse_birdnet_output.R`
-- if you run `scripts/analyse_birdnet_output.R` interactively in RStudio and leave `xeno_canto_api_key` blank, the script will prompt once for the key inside the R session
+- set `XENO_CANTO_API_KEY` in your shell or assign `xeno_canto_api_key` near the top of `scripts/analyse_birdnet_output.R` before running the script
 - the script queries `xeno-canto` first for each detected species
 - if `xeno-canto` returns no matches, the script falls back to `iNaturalist` sound observations
 
-The script classifies returned source records into `daylight`, `twilight`, and `night` using each source record's date, time, and coordinates. `xeno-canto` does not publish a timezone field, so its source-side light-phase classification uses a longitude-based timezone estimate; `iNaturalist` uses the observation timezone when available. If `diel_sanity_check_remove_improbable <- TRUE`, BirdNET detections in a light phase not supported by the chosen online source are removed before downstream summaries and plots are built. To avoid over-filtering from very sparse public records, a species is only assessed when at least `diel_min_reference_record_count` usable source records are available.
+The script classifies returned source records into `daylight`, `twilight`, and `night` using each source record's date, time, and coordinates. `xeno-canto` (see below) does not publish a timezone field, so its source-side light-phase classification uses a longitude-based timezone estimate; `iNaturalist` uses the observation timezone when available. If `diel_sanity_check_remove_improbable <- TRUE`, BirdNET detections in a light phase not supported by the chosen online source are removed before downstream summaries and plots are built. To avoid over-filtering from very sparse public records, a species is only assessed when at least `diel_min_reference_record_count` usable source records are available.
 
 ## How to run
 
@@ -307,6 +306,44 @@ Those entrypoints still read `scripts/downloading_user_options.R`, but they now 
 Open `scripts/analyse_birdnet_output.R` in RStudio, VS Code, or another R editor, adjust the settings block if needed, then run the script inside R.
 
 The script is intended to be run as a standalone analysis file rather than driven by command-line arguments.
+
+If you want to provide the online-source and ALA credentials explicitly inside **R / RStudio before sourcing the script**, run:
+
+```r
+Sys.setenv(
+  XENO_CANTO_API_KEY = "your_xeno_canto_api_key",
+  ALA_USERNAME = "your_ala_username",
+  ALA_EMAIL = "your_ala_email",
+  ALA_PASSWORD = "your_ala_password"
+)
+
+source("scripts/analyse_birdnet_output.R")
+```
+
+If you prefer to keep them as R objects for that session instead of environment variables, open `scripts/analyse_birdnet_output.R` and set the top-of-file values directly before running:
+
+```r
+ala_auth_mode <- "ala"
+ala_user_name <- "your_ala_username"
+ala_email <- "your_ala_email"
+ala_password <- "your_ala_password"
+xeno_canto_api_key <- "your_xeno_canto_api_key"
+```
+
+For an RStudio workflow, the simplest pattern is:
+
+```r
+setwd("/path/to/birdnetRpredict")
+
+Sys.setenv(
+  XENO_CANTO_API_KEY = "your_xeno_canto_api_key",
+  ALA_USERNAME = "your_ala_username",
+  ALA_EMAIL = "your_ala_email",
+  ALA_PASSWORD = "your_ala_password"
+)
+
+source("scripts/analyse_birdnet_output.R")
+```
 
 It uses `ggplot2` for all figures.
 By default, the figures are shown in the active R graphics session and also saved as `.png` files.
@@ -512,7 +549,7 @@ The analysis workflow writes:
 In the species-frequency plots, the identification axis is shown on a log<sub>10</sub> scale, and common names are displayed in lowercase except where proper nouns remain capitalised. Latin names are italicised in the species-axis labels.
 The root-level analysis figures are the combined overall results across all recorders currently present in `out/`. A small set of simplified recorder-comparison plots is also written at the root level for direct cross-recorder comparison, while recorder-specific figures are written into the `recorders/` subdirectory as each recorder becomes available.
 The detections-over-time plots now include two versions: a log<sub>10</sub>-scale plot with black bars and a red trailing running mean controlled by `rolling_mean_window_days`, and a separate linear-scale plot with black bars only and no running mean. The linear-scale versions include low-alpha background bands showing local morning twilight (pink), daylight (yellow), evening twilight (pink), and night (dark blue).
-Before downstream summaries and plots are built, detections can optionally be checked against public online bird-sound evidence. The script queries `xeno-canto` first and falls back to `iNaturalist` sound observations only when `xeno-canto` has no matches for that species. If a species is marked as unlikely to call during the detected light phase (`daylight`, `twilight`, or `night`), the detection is written to the online removal-audit CSV and removed from the analysis when `diel_sanity_check_remove_improbable <- TRUE`.
+Before downstream summaries and plots are built, detections can optionally be checked against public online bird-sound evidence. The script queries <a href="https://xeno-canto.org/">`xeno-canto`</a> first and falls back to <a href="https://www.inaturalist.org/">`iNaturalist`</a> sound observations only when `xeno-canto` has no matches for that species. If a species is marked as unlikely to call during the detected light phase (`daylight`, `twilight`, or `night`), the detection is written to the online removal-audit CSV and removed from the analysis when `diel_sanity_check_remove_improbable <- TRUE`.
 Before the analysis plots are built, detected species can optionally be checked against Atlas of Living Australia occurrence records using the <code>galah</code> package. This check searches for records within a user-defined radius (default 200 km) of the recorder reference locations, flags species with no nearby records or only very small nearby record counts as potentially suspicious, and writes those flags to the ALA sanity-check CSV outputs without removing any BirdNET detections from the analysis.
 The count-based diversity metrics treat the number of detections per species as the abundance proxy for Shannon, Simpson, and Hill-number calculations, and are produced across user-defined diversity windows set with `diversity_window_days`. A parallel daily-incidence diversity summary is also written, and raw species richness is summarized across those same diversity windows in a separate plot/table.
 The top-species time-series plots default to 24-hour bins through `top_species_time_bin_minutes <- 24 × 60`, but that bin size can be changed directly in `scripts/analyse_birdnet_output.R`.

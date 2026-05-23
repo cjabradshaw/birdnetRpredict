@@ -7,7 +7,7 @@ rolling_mean_window_days <- 7
 min_confidence <- 0.5
 periodicity_max_lag_bins <- 48L
 ala_sanity_check_enabled <- TRUE
-ala_auth_mode <- "prompt"  # "ala", "prompt", or "none"
+ala_auth_mode <- "ala"  # "ala" or "none"
 ala_match_radius_km <- 200 # within x km of recording location to consider for ALA occurrence records
 ala_min_local_occurrence_records <- 5L # at least x ALA records within radius to consider a species as "supported in region"
 ala_download_reason_id <- NA_integer_
@@ -17,7 +17,7 @@ ala_password <- Sys.getenv("ALA_PASSWORD", unset = "")
 diel_sanity_check_enabled <- TRUE
 diel_sanity_check_remove_improbable <- TRUE
 xeno_canto_api_key <- trimws(Sys.getenv("XENO_CANTO_API_KEY", unset = ""))
-diel_min_reference_record_count <- 5L
+diel_min_reference_record_count <- 2L # at least x records in xeno-canto or iNaturalist with usable data for sanity check of diel patterns
 diel_xeno_canto_per_page <- 100L
 diel_inaturalist_per_page <- 100L
 show_plots_in_session <- TRUE
@@ -196,10 +196,6 @@ normalise_diel_light_phase <- function(light_phase) {
   clean_phase
 }
 
-prompt_for_xeno_canto_api_key <- function() {
-  trimws(readline("xeno-canto API key: "))
-}
-
 resolve_xeno_canto_api_key <- function(api_key) {
   candidate_key <- trimws(as.character(api_key)[1])
   if (nzchar(candidate_key)) {
@@ -209,10 +205,6 @@ resolve_xeno_canto_api_key <- function(api_key) {
   env_key <- trimws(Sys.getenv("XENO_CANTO_API_KEY", unset = ""))
   if (nzchar(env_key)) {
     return(env_key)
-  }
-
-  if (interactive()) {
-    return(prompt_for_xeno_canto_api_key())
   }
 
   ""
@@ -384,7 +376,7 @@ query_xeno_canto_reference_records <- function(scientific_name, api_key, per_pag
   if (!nzchar(api_key)) {
     return(list(
       status = "missing_api_key",
-      message = "No xeno-canto API key was supplied. Set XENO_CANTO_API_KEY or provide the key in the interactive R session.",
+      message = "No xeno-canto API key was supplied. Set XENO_CANTO_API_KEY or assign xeno_canto_api_key in the script before running.",
       records = data.frame()
     ))
   }
@@ -913,23 +905,10 @@ append_online_diel_sanity_columns <- function(data_frame, diel_summary) {
   data_frame
 }
 
-prompt_for_ala_credentials <- function() {
-  prompt_value <- function(prompt_text, optional = FALSE) {
-    prompt_suffix <- if (optional) " [optional]" else ""
-    trimws(readline(sprintf("%s%s: ", prompt_text, prompt_suffix)))
-  }
-
-  list(
-    username = prompt_value("Atlas of Living Australia username", optional = TRUE),
-    email = prompt_value("Atlas of Living Australia email"),
-    password = prompt_value("Atlas of Living Australia password", optional = TRUE)
-  )
-}
-
 normalise_ala_auth_mode <- function(auth_mode) {
   auth_mode <- tolower(trimws(as.character(auth_mode)[1]))
   if (!nzchar(auth_mode)) {
-    return("prompt")
+    return("ala")
   }
   auth_mode
 }
@@ -947,11 +926,6 @@ resolve_ala_credentials <- function(auth_mode,
       email = trimws(ala_email),
       password = ala_password
     ),
-    prompt = if (interactive()) {
-      prompt_for_ala_credentials()
-    } else {
-      list(username = "", email = "", password = "")
-    },
     none = list(username = "", email = "", password = ""),
     stop(sprintf("unsupported ala_auth_mode: %s", auth_mode))
   )
@@ -1177,14 +1151,14 @@ build_ala_species_sanity_check <- function(species_counts,
   }
 
   auth_mode <- normalise_ala_auth_mode(auth_mode)
-  supported_auth_modes <- c("ala", "prompt", "none")
+  supported_auth_modes <- c("ala", "none")
   if (identical(auth_mode, "ecosounds")) {
     summary_df$ala_query_status <- "unsupported_auth_mode"
     summary_df$ala_query_message <- paste(
       "ala_auth_mode = 'ecosounds' is no longer supported.",
       "EcoSounds credentials are separate from Atlas of Living Australia credentials.",
       "Use ala_auth_mode = 'ala' with ALA_EMAIL (optionally ALA_USERNAME / ALA_PASSWORD),",
-      "or use ala_auth_mode = 'prompt' in an interactive session."
+      "or disable the ALA check with ala_auth_mode = 'none'."
     )
     summary_df$ala_sanity_status <- "not_run_unsupported_auth_mode"
     return(list(summary = summary_df, by_recorder = empty_by_recorder))
@@ -1210,11 +1184,7 @@ build_ala_species_sanity_check <- function(species_counts,
 
   if (!nzchar(credentials$email)) {
     summary_df$ala_query_status <- "missing_credentials"
-    summary_df$ala_query_message <- if (identical(auth_mode, "prompt") && !interactive()) {
-      "ALA prompt mode requires an interactive session, or supply ALA_EMAIL."
-    } else {
-      "No ALA email was supplied. Set ALA_EMAIL or choose prompt mode in an interactive session."
-    }
+    summary_df$ala_query_message <- "No ALA email was supplied. Set ALA_EMAIL or assign ala_email in the script before running."
     summary_df$ala_sanity_status <- "not_run_missing_credentials"
     return(list(summary = summary_df, by_recorder = empty_by_recorder))
   }
