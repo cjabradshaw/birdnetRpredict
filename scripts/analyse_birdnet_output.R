@@ -2,15 +2,16 @@
 analysis_timezone <- "Australia/Adelaide"
 bin_minutes <- 60
 diversity_window_days <- 14L
-top_species_time_bin_minutes <- 2 * 7 * 24 * 60
+top_species_time_bin_minutes <- 2 * 7 * 24 * 60 # e.g., 2 * 7 * 24 * 60 = 2 weeks
 rolling_mean_window_days <- 7
-min_confidence <- 0.5
+min_confidence <- 0.25
 periodicity_max_lag_bins <- 48L
 ala_sanity_check_enabled <- TRUE
+ala_sanity_check_remove_improbable <- TRUE
 ala_auth_mode <- "ala"  # "ala" or "none"
 ala_match_radius_km <- 200 # within x km of recording location to consider for ALA occurrence records
-ala_min_local_occurrence_records <- 5L # at least x ALA records within radius to consider a species as "supported in region"
-ala_download_reason_id <- NA_integer_
+ala_min_local_occurrence_records <- 2L # at least x ALA records within radius to consider a species as "supported in region"
+ala_download_reason_id <- 4L # ALA download reason "scientific research"
 ala_user_name <- trimws(Sys.getenv("ALA_USERNAME", unset = ""))
 ala_email <- trimws(Sys.getenv("ALA_EMAIL", unset = ""))
 ala_password <- Sys.getenv("ALA_PASSWORD", unset = "")
@@ -939,47 +940,6 @@ resolve_ala_credentials <- function(auth_mode,
   credentials
 }
 
-extract_galah_grouped_counts <- function(count_df, group_field) {
-  if (is.null(count_df) || nrow(count_df) == 0) {
-    return(data.frame(
-      scientific_name = character(),
-      ala_occurrence_count = numeric(),
-      stringsAsFactors = FALSE
-    ))
-  }
-
-  name_candidates <- c(group_field, "scientificName", "scientific_name", "group", "name")
-  value_candidates <- c("count", "n", "occurrences", "occurrence_count")
-
-  group_column <- name_candidates[name_candidates %in% names(count_df)][1]
-  value_column <- value_candidates[value_candidates %in% names(count_df)][1]
-
-  if (is.na(group_column) || is.na(value_column)) {
-    fallback_columns <- setdiff(names(count_df), value_candidates)
-    fallback_group <- fallback_columns[1]
-    if (!is.na(fallback_group) && value_candidates[1] %in% names(count_df)) {
-      group_column <- fallback_group
-      value_column <- value_candidates[1]
-    } else {
-      stop("could not identify grouped count columns returned by galah::atlas_counts().")
-    }
-  }
-
-  output_df <- data.frame(
-    scientific_name = trimws(as.character(count_df[[group_column]])),
-    ala_occurrence_count = suppressWarnings(as.numeric(count_df[[value_column]])),
-    stringsAsFactors = FALSE
-  )
-  output_df <- output_df[
-    !is.na(output_df$scientific_name) &
-      nzchar(output_df$scientific_name) &
-      !is.na(output_df$ala_occurrence_count),
-    ,
-    drop = FALSE
-  ]
-  output_df
-}
-
 query_ala_occurrence_counts_by_recorder <- function(recorder_reference_locations,
                                                     detected_species,
                                                     radius_km) {
@@ -1002,31 +962,39 @@ query_ala_occurrence_counts_by_recorder <- function(recorder_reference_locations
     return(empty_df)
   }
 
-  galah::galah_config(
-    atlas = "Australia",
-    run_checks = FALSE,
-    verbose = FALSE
-  )
-
   recorder_results <- lapply(seq_len(nrow(recorder_reference_locations)), function(index) {
     recorder_row <- recorder_reference_locations[index, , drop = FALSE]
     query_result <- tryCatch(
       {
-        count_df <- galah::galah_call() |>
-          galah::galah_filter(class == "Aves") |>
-          galah::galah_geolocate(
-            lat = recorder_row$recording_latitude[[1]],
-            lon = recorder_row$recording_longitude[[1]],
-            radius = radius_km,
-            type = "radius"
-          ) |>
-          galah::atlas_counts(
-            group_by = "scientificName",
-            limit = NULL
-          )
+        counts_df <- bind_rows_list(
+          lapply(detected_species, function(scientific_name) {
+            request_url <- paste0(
+              "https://biocache-ws.ala.org.au/ws/occurrences/search?",
+              "q=",
+              utils::URLencode(sprintf("species:\"%s\"", scientific_name), reserved = TRUE),
+              "&lat=",
+              recorder_row$recording_latitude[[1]],
+              "&lon=",
+              recorder_row$recording_longitude[[1]],
+              "&radius=",
+              radius_km,
+              "&pageSize=0"
+            )
 
-        counts_df <- extract_galah_grouped_counts(count_df, "scientificName")
-        counts_df <- counts_df[counts_df$scientific_name %in% detected_species, , drop = FALSE]
+            response <- fetch_json_url(request_url)
+            data.frame(
+              scientific_name = scientific_name,
+              ala_occurrence_count = suppressWarnings(as.numeric(response$totalRecords[[1]])),
+              stringsAsFactors = FALSE
+            )
+          }),
+          empty_template = data.frame(
+            scientific_name = character(),
+            ala_occurrence_count = numeric(),
+            stringsAsFactors = FALSE
+          )
+        )
+        counts_df <- counts_df[!is.na(counts_df$ala_occurrence_count), , drop = FALSE]
         if (nrow(counts_df) == 0) {
           data.frame(
             recorder_id = recorder_row$recorder_id[[1]],
@@ -1090,7 +1058,6 @@ build_ala_species_sanity_check <- function(species_counts,
                                            radius_km,
                                            min_local_occurrence_records,
                                            download_reason_id,
-                                           cache_dir,
                                            enabled = TRUE) {
   empty_summary <- data.frame(
     scientific_name = character(),
@@ -1143,13 +1110,6 @@ build_ala_species_sanity_check <- function(species_counts,
     return(list(summary = summary_df, by_recorder = empty_by_recorder))
   }
 
-  if (!requireNamespace("galah", quietly = TRUE)) {
-    summary_df$ala_query_status <- "package_missing"
-    summary_df$ala_query_message <- "R package 'galah' is required for ALA sanity checks."
-    summary_df$ala_sanity_status <- "not_run_package_missing"
-    return(list(summary = summary_df, by_recorder = empty_by_recorder))
-  }
-
   auth_mode <- normalise_ala_auth_mode(auth_mode)
   supported_auth_modes <- c("ala", "none")
   if (identical(auth_mode, "ecosounds")) {
@@ -1182,24 +1142,11 @@ build_ala_species_sanity_check <- function(species_counts,
   )
   summary_df$ala_email_used <- credentials$email
 
-  if (!nzchar(credentials$email)) {
-    summary_df$ala_query_status <- "missing_credentials"
-    summary_df$ala_query_message <- "No ALA email was supplied. Set ALA_EMAIL or assign ala_email in the script before running."
-    summary_df$ala_sanity_status <- "not_run_missing_credentials"
-    return(list(summary = summary_df, by_recorder = empty_by_recorder))
-  }
-
   if (nrow(recorder_reference_locations) == 0) {
     summary_df$ala_query_status <- "missing_locations"
     summary_df$ala_query_message <- "No recorder reference locations were available for the ALA sanity check."
     summary_df$ala_sanity_status <- "not_run_missing_locations"
     return(list(summary = summary_df, by_recorder = empty_by_recorder))
-  }
-
-  dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
-  galah::galah_config(email = credentials$email, directory = cache_dir)
-  if (!is.na(download_reason_id)) {
-    galah::galah_config(download_reason_id = as.integer(download_reason_id))
   }
 
   by_recorder_df <- query_ala_occurrence_counts_by_recorder(
@@ -1245,9 +1192,12 @@ build_ala_species_sanity_check <- function(species_counts,
         stringsAsFactors = FALSE
       )
     }
-    summary_df <- merge(summary_df, total_counts, by = "scientific_name", all.x = TRUE, suffixes = c("", ".tmp"))
-    summary_df <- merge(summary_df, max_counts, by = "scientific_name", all.x = TRUE, suffixes = c("", ".tmp"))
-    summary_df <- merge(summary_df, recorder_presence, by = "scientific_name", all.x = TRUE, suffixes = c("", ".tmp"))
+    total_match <- match(summary_df$scientific_name, total_counts$scientific_name)
+    max_match <- match(summary_df$scientific_name, max_counts$scientific_name)
+    presence_match <- match(summary_df$scientific_name, recorder_presence$scientific_name)
+    summary_df$ala_total_local_occurrence_count <- total_counts$ala_total_local_occurrence_count[total_match]
+    summary_df$ala_max_local_occurrence_count <- max_counts$ala_max_local_occurrence_count[max_match]
+    summary_df$ala_recorder_count_with_local_records <- recorder_presence$ala_recorder_count_with_local_records[presence_match]
   }
 
   summary_df$ala_total_local_occurrence_count[is.na(summary_df$ala_total_local_occurrence_count)] <- 0
@@ -1311,6 +1261,95 @@ append_ala_sanity_columns <- function(data_frame, ala_summary) {
   }
 
   data_frame
+}
+
+apply_ala_sanity_filter <- function(detections,
+                                    ala_summary,
+                                    remove_improbable = FALSE) {
+  empty_removed <- data.frame(
+    date_time = as.POSIXct(character()),
+    recorder_id = character(),
+    scientific_name = character(),
+    common_name = character(),
+    species_label = character(),
+    confidence = numeric(),
+    light_phase = character(),
+    ala_match_radius_km = numeric(),
+    ala_min_local_occurrence_records = integer(),
+    ala_total_local_occurrence_count = numeric(),
+    ala_max_local_occurrence_count = numeric(),
+    ala_recorder_count_with_local_records = integer(),
+    ala_query_status = character(),
+    ala_query_message = character(),
+    ala_sanity_status = character(),
+    ala_filter_message = character(),
+    stringsAsFactors = FALSE
+  )
+
+  if (nrow(detections) == 0 || nrow(ala_summary) == 0) {
+    return(list(removed_detections = empty_removed, retained_detections = detections))
+  }
+
+  original_columns <- names(detections)
+  annotated_detections <- append_ala_sanity_columns(detections, ala_summary)
+  match_index <- match(annotated_detections$scientific_name, ala_summary$scientific_name)
+  annotated_detections$ala_match_radius_km <- ala_summary$ala_match_radius_km[match_index]
+  annotated_detections$ala_min_local_occurrence_records <- ala_summary$ala_min_local_occurrence_records[match_index]
+
+  removable_rows <- !is.na(annotated_detections$ala_potentially_suspicious) &
+    annotated_detections$ala_potentially_suspicious &
+    annotated_detections$ala_query_status == "ok"
+
+  annotated_detections$ala_filter_message <- ifelse(
+    removable_rows,
+    "Removed because the species did not meet the configured minimum local ALA occurrence criterion.",
+    ""
+  )
+
+  if (isTRUE(remove_improbable) && any(removable_rows) && all(removable_rows)) {
+    return(list(
+      removed_detections = empty_removed,
+      retained_detections = detections
+    ))
+  }
+
+  removed_rows <- if (isTRUE(remove_improbable) && any(removable_rows)) {
+    annotated_detections[
+      removable_rows,
+      c(
+        "date_time",
+        "recorder_id",
+        "scientific_name",
+        "common_name",
+        "species_label",
+        "confidence",
+        "light_phase",
+        "ala_match_radius_km",
+        "ala_min_local_occurrence_records",
+        "ala_total_local_occurrence_count",
+        "ala_max_local_occurrence_count",
+        "ala_recorder_count_with_local_records",
+        "ala_query_status",
+        "ala_query_message",
+        "ala_sanity_status",
+        "ala_filter_message"
+      ),
+      drop = FALSE
+    ]
+  } else {
+    empty_removed
+  }
+
+  retained_rows <- if (isTRUE(remove_improbable)) {
+    annotated_detections[!removable_rows, original_columns, drop = FALSE]
+  } else {
+    detections
+  }
+
+  list(
+    removed_detections = removed_rows,
+    retained_detections = retained_rows
+  )
 }
 
 floor_to_bin <- function(date_time, bin_minutes, timezone) {
@@ -4344,6 +4383,7 @@ write_analysis_summary <- function(summary_txt,
                                    confidence_filtered_detection_count,
                                    filtered_detections,
                                    diel_removed_detection_count,
+                                   ala_removed_detection_count,
                                    diel_species_sanity_summary,
                                    light_phase_sampling_effort,
                                    diel_species_summary) {
@@ -4365,6 +4405,7 @@ write_analysis_summary <- function(summary_txt,
     sprintf("summary CSV files skipped due to empty/unreadable/incomplete content: %d", sum(file_status$read_status != "ok")),
     sprintf("detections retained after confidence filter: %d", confidence_filtered_detection_count),
     sprintf("detections removed by online diel sanity filter: %d", diel_removed_detection_count),
+    sprintf("detections removed by ALA sanity filter: %d", ala_removed_detection_count),
     sprintf("detections retained after all filters: %d", nrow(filtered_detections)),
     sprintf("unique species retained after all filters: %d", unique_species)
   )
@@ -4445,6 +4486,25 @@ write_analysis_summary <- function(summary_txt,
   writeLines(analysis_lines, con = summary_txt)
 }
 
+suppress_nan_transformation_warnings <- function(expr) {
+  withCallingHandlers(
+    expr,
+    warning = function(warning_condition) {
+      if (grepl("NaNs produced", conditionMessage(warning_condition), fixed = TRUE)) {
+        invokeRestart("muffleWarning")
+      }
+    }
+  )
+}
+
+print_plot_quiet <- function(plot_object, ...) {
+  suppress_nan_transformation_warnings(print(plot_object, ...))
+}
+
+save_plot_quiet <- function(...) {
+  suppress_nan_transformation_warnings(ggplot2::ggsave(...))
+}
+
 if (!requireNamespace("ggplot2", quietly = TRUE)) {
   stop("ggplot2 package required for analyse_birdnet_output.R; install it with install.packages('ggplot2').")
 }
@@ -4472,6 +4532,25 @@ if (!is.numeric(bin_minutes) || length(bin_minutes) != 1 || is.na(bin_minutes) |
 if (!is.numeric(top_species_time_bin_minutes) || length(top_species_time_bin_minutes) != 1 ||
     is.na(top_species_time_bin_minutes) || top_species_time_bin_minutes <= 0) {
   stop("top_species_time_bin_minutes must be a single positive number")
+}
+
+if (!is.logical(ala_sanity_check_enabled) || length(ala_sanity_check_enabled) != 1 || is.na(ala_sanity_check_enabled)) {
+  stop("ala_sanity_check_enabled must be TRUE or FALSE")
+}
+
+if (!is.logical(ala_sanity_check_remove_improbable) || length(ala_sanity_check_remove_improbable) != 1 ||
+    is.na(ala_sanity_check_remove_improbable)) {
+  stop("ala_sanity_check_remove_improbable must be TRUE or FALSE")
+}
+
+if (!is.numeric(ala_match_radius_km) || length(ala_match_radius_km) != 1 ||
+    is.na(ala_match_radius_km) || ala_match_radius_km <= 0) {
+  stop("ala_match_radius_km must be a single positive number")
+}
+
+if (!is.numeric(ala_min_local_occurrence_records) || length(ala_min_local_occurrence_records) != 1 ||
+    is.na(ala_min_local_occurrence_records) || ala_min_local_occurrence_records < 1) {
+  stop("ala_min_local_occurrence_records must be a single positive integer")
 }
 
 if (!is.logical(diel_sanity_check_enabled) || length(diel_sanity_check_enabled) != 1 || is.na(diel_sanity_check_enabled)) {
@@ -4715,6 +4794,108 @@ filtered_detections <- online_diel_sanity_check$retained_detections
 
 if (nrow(filtered_detections) == 0) {
   stop("No detections remain after applying min_confidence and the online diel sanity filter.")
+}
+
+recorder_reference_locations <- build_recorder_reference_locations(summary_file_metadata)
+ala_species_input <- aggregate(
+  list(identification_count = rep(1L, nrow(filtered_detections))),
+  by = list(
+    scientific_name = filtered_detections$scientific_name,
+    common_name = filtered_detections$common_name
+  ),
+  FUN = sum
+)
+ala_species_input$species_label <- paste0(ala_species_input$common_name, " (", ala_species_input$scientific_name, ")")
+ala_species_input <- ala_species_input[order(-ala_species_input$identification_count, ala_species_input$species_label), , drop = FALSE]
+ala_species_sanity_summary <- ala_species_input[, c("scientific_name", "common_name", "species_label", "identification_count"), drop = FALSE]
+ala_species_sanity_summary$ala_email_used <- ""
+ala_species_sanity_summary$ala_match_radius_km <- ala_match_radius_km
+ala_species_sanity_summary$ala_min_local_occurrence_records <- as.integer(ala_min_local_occurrence_records)
+ala_species_sanity_summary$ala_total_local_occurrence_count <- NA_real_
+ala_species_sanity_summary$ala_max_local_occurrence_count <- NA_real_
+ala_species_sanity_summary$ala_recorder_count_with_local_records <- NA_integer_
+ala_species_sanity_summary$ala_query_status <- "not_run"
+ala_species_sanity_summary$ala_query_message <- ""
+ala_species_sanity_summary$ala_sanity_status <- "not_run"
+ala_species_sanity_summary$ala_potentially_suspicious <- NA
+ala_occurrence_counts_by_recorder <- data.frame(
+  recorder_id = character(),
+  recording_latitude = numeric(),
+  recording_longitude = numeric(),
+  query_radius_km = numeric(),
+  scientific_name = character(),
+  ala_occurrence_count = numeric(),
+  query_status = character(),
+  query_message = character(),
+  stringsAsFactors = FALSE
+)
+ala_removed_detections <- data.frame(
+  date_time = as.POSIXct(character()),
+  recorder_id = character(),
+  scientific_name = character(),
+  common_name = character(),
+  species_label = character(),
+  confidence = numeric(),
+  light_phase = character(),
+  ala_match_radius_km = numeric(),
+  ala_min_local_occurrence_records = integer(),
+  ala_total_local_occurrence_count = numeric(),
+  ala_max_local_occurrence_count = numeric(),
+  ala_recorder_count_with_local_records = integer(),
+  ala_query_status = character(),
+  ala_query_message = character(),
+  ala_sanity_status = character(),
+  ala_filter_message = character(),
+  stringsAsFactors = FALSE
+)
+ala_sanity_check <- tryCatch(
+  build_ala_species_sanity_check(
+    species_counts = ala_species_input,
+    recorder_reference_locations = recorder_reference_locations,
+    auth_mode = ala_auth_mode,
+    ala_user_name = ala_user_name,
+    ala_email = ala_email,
+    ala_password = ala_password,
+    radius_km = ala_match_radius_km,
+    min_local_occurrence_records = ala_min_local_occurrence_records,
+    download_reason_id = ala_download_reason_id,
+    enabled = ala_sanity_check_enabled
+  ),
+  error = function(error) {
+    fallback_summary <- ala_species_sanity_summary
+    fallback_summary$ala_email_used <- ""
+    fallback_summary$ala_match_radius_km <- ala_match_radius_km
+    fallback_summary$ala_min_local_occurrence_records <- as.integer(ala_min_local_occurrence_records)
+    fallback_summary$ala_total_local_occurrence_count <- NA_real_
+    fallback_summary$ala_max_local_occurrence_count <- NA_real_
+    fallback_summary$ala_recorder_count_with_local_records <- NA_integer_
+    fallback_summary$ala_query_status <- "query_failed"
+    fallback_summary$ala_query_message <- conditionMessage(error)
+    fallback_summary$ala_sanity_status <- "not_run_query_failed"
+    fallback_summary$ala_potentially_suspicious <- NA
+
+    list(
+      summary = fallback_summary,
+      by_recorder = ala_occurrence_counts_by_recorder
+    )
+  }
+)
+if (is.list(ala_sanity_check) && "summary" %in% names(ala_sanity_check)) {
+  ala_species_sanity_summary <- ala_sanity_check$summary
+}
+if (is.list(ala_sanity_check) && "by_recorder" %in% names(ala_sanity_check)) {
+  ala_occurrence_counts_by_recorder <- ala_sanity_check$by_recorder
+}
+ala_filter_result <- apply_ala_sanity_filter(
+  detections = filtered_detections,
+  ala_summary = ala_species_sanity_summary,
+  remove_improbable = ala_sanity_check_remove_improbable
+)
+ala_removed_detections <- ala_filter_result$removed_detections
+filtered_detections <- ala_filter_result$retained_detections
+
+if (nrow(filtered_detections) == 0) {
+  stop("No detections remain after applying min_confidence, the online diel sanity filter, and the ALA sanity filter.")
 }
 
 time_series_summary <- build_time_series_summary_for_subset(
@@ -5504,69 +5685,6 @@ species_counts_by_recorder <- append_online_diel_sanity_columns(species_counts_b
 species_counts_by_month <- append_online_diel_sanity_columns(species_counts_by_month, online_diel_species_sanity_summary)
 species_counts_by_month_by_recorder <- append_online_diel_sanity_columns(species_counts_by_month_by_recorder, online_diel_species_sanity_summary)
 non_native_species_summary <- append_online_diel_sanity_columns(non_native_species_summary, online_diel_species_sanity_summary)
-recorder_reference_locations <- build_recorder_reference_locations(summary_file_metadata)
-ala_cache_dir <- file.path(output_dir, ".galah-cache")
-ala_species_sanity_summary <- species_counts[, c("scientific_name", "common_name", "species_label", "identification_count"), drop = FALSE]
-ala_species_sanity_summary$ala_email_used <- ""
-ala_species_sanity_summary$ala_match_radius_km <- ala_match_radius_km
-ala_species_sanity_summary$ala_min_local_occurrence_records <- as.integer(ala_min_local_occurrence_records)
-ala_species_sanity_summary$ala_total_local_occurrence_count <- NA_real_
-ala_species_sanity_summary$ala_max_local_occurrence_count <- NA_real_
-ala_species_sanity_summary$ala_recorder_count_with_local_records <- NA_integer_
-ala_species_sanity_summary$ala_query_status <- "not_run"
-ala_species_sanity_summary$ala_query_message <- ""
-ala_species_sanity_summary$ala_sanity_status <- "not_run"
-ala_species_sanity_summary$ala_potentially_suspicious <- NA
-ala_occurrence_counts_by_recorder <- data.frame(
-  recorder_id = character(),
-  recording_latitude = numeric(),
-  recording_longitude = numeric(),
-  query_radius_km = numeric(),
-  scientific_name = character(),
-  ala_occurrence_count = numeric(),
-  query_status = character(),
-  query_message = character(),
-  stringsAsFactors = FALSE
-)
-ala_sanity_check <- tryCatch(
-  build_ala_species_sanity_check(
-    species_counts = species_counts,
-    recorder_reference_locations = recorder_reference_locations,
-    auth_mode = ala_auth_mode,
-    ala_user_name = ala_user_name,
-    ala_email = ala_email,
-    ala_password = ala_password,
-    radius_km = ala_match_radius_km,
-    min_local_occurrence_records = ala_min_local_occurrence_records,
-    download_reason_id = ala_download_reason_id,
-    cache_dir = ala_cache_dir,
-    enabled = ala_sanity_check_enabled
-  ),
-  error = function(error) {
-    fallback_summary <- ala_species_sanity_summary
-    fallback_summary$ala_email_used <- ""
-    fallback_summary$ala_match_radius_km <- ala_match_radius_km
-    fallback_summary$ala_min_local_occurrence_records <- as.integer(ala_min_local_occurrence_records)
-    fallback_summary$ala_total_local_occurrence_count <- NA_real_
-    fallback_summary$ala_max_local_occurrence_count <- NA_real_
-    fallback_summary$ala_recorder_count_with_local_records <- NA_integer_
-    fallback_summary$ala_query_status <- "query_failed"
-    fallback_summary$ala_query_message <- conditionMessage(error)
-    fallback_summary$ala_sanity_status <- "not_run_query_failed"
-    fallback_summary$ala_potentially_suspicious <- NA
-
-    list(
-      summary = fallback_summary,
-      by_recorder = ala_occurrence_counts_by_recorder
-    )
-  }
-)
-if (is.list(ala_sanity_check) && "summary" %in% names(ala_sanity_check)) {
-  ala_species_sanity_summary <- ala_sanity_check$summary
-}
-if (is.list(ala_sanity_check) && "by_recorder" %in% names(ala_sanity_check)) {
-  ala_occurrence_counts_by_recorder <- ala_sanity_check$by_recorder
-}
 species_counts <- append_ala_sanity_columns(species_counts, ala_species_sanity_summary)
 species_counts_by_recorder <- append_ala_sanity_columns(species_counts_by_recorder, ala_species_sanity_summary)
 species_counts_by_month <- append_ala_sanity_columns(species_counts_by_month, ala_species_sanity_summary)
@@ -5585,6 +5703,7 @@ diel_species_by_recorder_csv <- file.path(output_dir, "birdnet_diel_activity_by_
 online_diel_species_sanity_csv <- file.path(output_dir, "birdnet_online_diel_sanity_check.csv")
 online_diel_removed_detections_csv <- file.path(output_dir, "birdnet_online_diel_removed_detections.csv")
 ala_species_sanity_csv <- file.path(output_dir, "birdnet_ala_species_sanity_check.csv")
+ala_removed_detections_csv <- file.path(output_dir, "birdnet_ala_removed_detections.csv")
 ala_occurrence_counts_by_recorder_csv <- file.path(output_dir, "birdnet_ala_occurrence_counts_by_recorder.csv")
 non_native_species_csv <- file.path(output_dir, "birdnet_non_native_species_detected.csv")
 non_native_time_series_csv <- file.path(output_dir, "birdnet_non_native_species_detections_through_time.csv")
@@ -5626,6 +5745,7 @@ write.csv(diel_species_summary_by_recorder, diel_species_by_recorder_csv, row.na
 write.csv(online_diel_species_sanity_summary, online_diel_species_sanity_csv, row.names = FALSE)
 write.csv(online_diel_removed_detections, online_diel_removed_detections_csv, row.names = FALSE)
 write.csv(ala_species_sanity_summary, ala_species_sanity_csv, row.names = FALSE)
+write.csv(ala_removed_detections, ala_removed_detections_csv, row.names = FALSE)
 write.csv(ala_occurrence_counts_by_recorder, ala_occurrence_counts_by_recorder_csv, row.names = FALSE)
 write.csv(non_native_species_summary, non_native_species_csv, row.names = FALSE)
 write.csv(non_native_time_series, non_native_time_series_csv, row.names = FALSE)
@@ -5669,6 +5789,7 @@ write_analysis_summary(
   confidence_filtered_detection_count = confidence_filtered_detection_count,
   filtered_detections = filtered_detections,
   diel_removed_detection_count = nrow(online_diel_removed_detections),
+  ala_removed_detection_count = nrow(ala_removed_detections),
   diel_species_sanity_summary = online_diel_species_sanity_summary,
   light_phase_sampling_effort = light_phase_sampling_effort,
   diel_species_summary = diel_species_summary
@@ -6591,23 +6712,23 @@ if (isTRUE(show_plots_in_session) && interactive()) {
     grDevices::dev.off()
   }
 
-  print(time_series_plot)
-  print(time_series_plot_linear)
-  print(cumulative_species_plot)
-  print(species_counts_plot)
-  print(species_counts_by_month_plot)
-  print(monthly_diversity_plot)
-  print(monthly_diversity_daily_incidence_plot)
-  print(monthly_raw_species_richness_plot)
-  print(time_series_recorder_comparison_plot)
-  print(cumulative_species_recorder_comparison_plot)
-  print(total_diversity_recorder_comparison_plot)
-  print(hill_q2_recorder_comparison_plot)
-  print(top_species_plot)
-  print(non_native_plot)
-  print(diel_activity_heatmap_plot)
-  print(diel_preference_plot)
-  print(periodicity_plot)
+  print_plot_quiet(time_series_plot)
+  print_plot_quiet(time_series_plot_linear)
+  print_plot_quiet(cumulative_species_plot)
+  print_plot_quiet(species_counts_plot)
+  print_plot_quiet(species_counts_by_month_plot)
+  print_plot_quiet(monthly_diversity_plot)
+  print_plot_quiet(monthly_diversity_daily_incidence_plot)
+  print_plot_quiet(monthly_raw_species_richness_plot)
+  print_plot_quiet(time_series_recorder_comparison_plot)
+  print_plot_quiet(cumulative_species_recorder_comparison_plot)
+  print_plot_quiet(total_diversity_recorder_comparison_plot)
+  print_plot_quiet(hill_q2_recorder_comparison_plot)
+  print_plot_quiet(top_species_plot)
+  print_plot_quiet(non_native_plot)
+  print_plot_quiet(diel_activity_heatmap_plot)
+  print_plot_quiet(diel_preference_plot)
+  print_plot_quiet(periodicity_plot)
 }
 
 separate_recorder_plot_paths <- c(
@@ -6620,133 +6741,133 @@ separate_recorder_plot_paths <- c(
 )
 unlink(separate_recorder_plot_paths)
 
-ggplot2::ggsave(
+save_plot_quiet(
   filename = file.path(output_dir, "birdnet_identifications_over_time.png"),
   plot = time_series_plot,
   width = 12,
   height = 7,
   dpi = 150
 )
-ggplot2::ggsave(
+save_plot_quiet(
   filename = file.path(output_dir, "birdnet_identifications_over_time_linear.png"),
   plot = time_series_plot_linear,
   width = 12,
   height = 7,
   dpi = 150
 )
-ggplot2::ggsave(
+save_plot_quiet(
   filename = file.path(output_dir, "birdnet_cumulative_new_species.png"),
   plot = cumulative_species_plot,
   width = 12,
   height = 7,
   dpi = 150
 )
-ggplot2::ggsave(
+save_plot_quiet(
   filename = file.path(output_dir, "birdnet_identifications_by_species.png"),
   plot = species_counts_plot,
   width = 13,
   height = 10,
   dpi = 150
 )
-ggplot2::ggsave(
+save_plot_quiet(
   filename = file.path(output_dir, "birdnet_identifications_by_species_by_month.png"),
   plot = species_counts_by_month_plot,
   width = 16,
   height = 12,
   dpi = 150
 )
-ggplot2::ggsave(
+save_plot_quiet(
   filename = file.path(output_dir, "birdnet_monthly_diversity_metrics.png"),
   plot = monthly_diversity_plot,
   width = 14,
   height = 10,
   dpi = 150
 )
-ggplot2::ggsave(
+save_plot_quiet(
   filename = file.path(output_dir, "birdnet_monthly_diversity_metrics_daily_incidence.png"),
   plot = monthly_diversity_daily_incidence_plot,
   width = 14,
   height = 10,
   dpi = 150
 )
-ggplot2::ggsave(
+save_plot_quiet(
   filename = file.path(output_dir, "birdnet_raw_species_richness_by_diversity_window.png"),
   plot = monthly_raw_species_richness_plot,
   width = 12,
   height = 7,
   dpi = 150
 )
-ggplot2::ggsave(
+save_plot_quiet(
   filename = file.path(output_dir, "birdnet_identifications_over_time_recorder_comparison.png"),
   plot = time_series_recorder_comparison_plot,
   width = 14,
   height = 7,
   dpi = 150
 )
-ggplot2::ggsave(
+save_plot_quiet(
   filename = file.path(output_dir, "birdnet_cumulative_new_species_recorder_comparison.png"),
   plot = cumulative_species_recorder_comparison_plot,
   width = 14,
   height = 7,
   dpi = 150
 )
-ggplot2::ggsave(
+save_plot_quiet(
   filename = file.path(output_dir, "birdnet_total_diversity_recorder_comparison.png"),
   plot = total_diversity_recorder_comparison_plot,
   width = 14,
   height = 7,
   dpi = 150
 )
-ggplot2::ggsave(
+save_plot_quiet(
   filename = file.path(output_dir, "birdnet_hill_q2_recorder_comparison.png"),
   plot = hill_q2_recorder_comparison_plot,
   width = 14,
   height = 7,
   dpi = 150
 )
-ggplot2::ggsave(
+save_plot_quiet(
   filename = file.path(output_dir, "birdnet_top_10_species_detections_through_time.png"),
   plot = top_species_plot,
   width = 14,
   height = 8,
   dpi = 150
 )
-ggplot2::ggsave(
+save_plot_quiet(
   filename = file.path(output_dir, "birdnet_non_native_species_detections_through_time.png"),
   plot = non_native_plot,
   width = 14,
   height = 8,
   dpi = 150
 )
-ggplot2::ggsave(
+save_plot_quiet(
   filename = file.path(output_dir, "birdnet_diel_activity_by_species.png"),
   plot = diel_activity_heatmap_plot,
   width = 13,
   height = 9,
   dpi = 150
 )
-ggplot2::ggsave(
+save_plot_quiet(
   filename = file.path(output_dir, "birdnet_day_night_calling_bias_by_species.png"),
   plot = diel_preference_plot,
   width = 13,
   height = 9,
   dpi = 150
 )
-ggplot2::ggsave(
+save_plot_quiet(
   filename = file.path(output_dir, "birdnet_top_10_species_detections_through_time_by_recorder.png"),
   plot = top_species_by_recorder_plot,
   width = 15,
   height = max(8, 3 * length(recorder_ids)),
   dpi = 150
 )
-ggplot2::ggsave(
+save_plot_quiet(
   filename = file.path(output_dir, "birdnet_cumulative_new_species_by_recorder.png"),
   plot = cumulative_species_by_recorder_plot,
   width = 14,
   height = max(7, 3 * length(recorder_ids)),
   dpi = 150
 )
-ggplot2::ggsave(
+save_plot_quiet(
   filename = file.path(output_dir, "birdnet_periodicity.png"),
   plot = periodicity_plot,
   width = 15,
@@ -7209,30 +7330,30 @@ for (recorder_id in recorder_ids) {
   )
 
   if (isTRUE(show_plots_in_session) && interactive()) {
-    print(recorder_time_series_plot)
-    print(recorder_time_series_plot_linear)
-    print(recorder_cumulative_plot)
-    print(recorder_species_plot)
-    print(recorder_species_by_month_plot)
-    print(recorder_species_composition_plot)
-    print(recorder_diversity_plot)
-    print(recorder_daily_incidence_diversity_plot)
-    print(recorder_top_species_plot)
-    print(recorder_non_native_plot)
-    print(recorder_periodicity_plot)
+    print_plot_quiet(recorder_time_series_plot)
+    print_plot_quiet(recorder_time_series_plot_linear)
+    print_plot_quiet(recorder_cumulative_plot)
+    print_plot_quiet(recorder_species_plot)
+    print_plot_quiet(recorder_species_by_month_plot)
+    print_plot_quiet(recorder_species_composition_plot)
+    print_plot_quiet(recorder_diversity_plot)
+    print_plot_quiet(recorder_daily_incidence_diversity_plot)
+    print_plot_quiet(recorder_top_species_plot)
+    print_plot_quiet(recorder_non_native_plot)
+    print_plot_quiet(recorder_periodicity_plot)
   }
 
-  ggplot2::ggsave(file.path(recorder_dir, "birdnet_identifications_over_time.png"), recorder_time_series_plot, width = 12, height = 7, dpi = 150)
-  ggplot2::ggsave(file.path(recorder_dir, "birdnet_identifications_over_time_linear.png"), recorder_time_series_plot_linear, width = 12, height = 7, dpi = 150)
-  ggplot2::ggsave(file.path(recorder_dir, "birdnet_cumulative_new_species.png"), recorder_cumulative_plot, width = 12, height = 7, dpi = 150)
-  ggplot2::ggsave(file.path(recorder_dir, "birdnet_identifications_by_species.png"), recorder_species_plot, width = 13, height = 10, dpi = 150)
-  ggplot2::ggsave(file.path(recorder_dir, "birdnet_identifications_by_species_by_month.png"), recorder_species_by_month_plot, width = 16, height = 12, dpi = 150)
-  ggplot2::ggsave(file.path(recorder_dir, "birdnet_species_composition_by_diversity_window.png"), recorder_species_composition_plot, width = 15, height = 8, dpi = 150)
-  ggplot2::ggsave(file.path(recorder_dir, "birdnet_monthly_diversity_metrics.png"), recorder_diversity_plot, width = 14, height = 10, dpi = 150)
-  ggplot2::ggsave(file.path(recorder_dir, "birdnet_monthly_diversity_metrics_daily_incidence.png"), recorder_daily_incidence_diversity_plot, width = 14, height = 10, dpi = 150)
-  ggplot2::ggsave(file.path(recorder_dir, "birdnet_top_10_species_detections_through_time.png"), recorder_top_species_plot, width = 14, height = 8, dpi = 150)
-  ggplot2::ggsave(file.path(recorder_dir, "birdnet_non_native_species_detections_through_time.png"), recorder_non_native_plot, width = 14, height = 8, dpi = 150)
-  ggplot2::ggsave(file.path(recorder_dir, "birdnet_periodicity.png"), recorder_periodicity_plot, width = 15, height = 11, dpi = 150)
+  save_plot_quiet(file.path(recorder_dir, "birdnet_identifications_over_time.png"), recorder_time_series_plot, width = 12, height = 7, dpi = 150)
+  save_plot_quiet(file.path(recorder_dir, "birdnet_identifications_over_time_linear.png"), recorder_time_series_plot_linear, width = 12, height = 7, dpi = 150)
+  save_plot_quiet(file.path(recorder_dir, "birdnet_cumulative_new_species.png"), recorder_cumulative_plot, width = 12, height = 7, dpi = 150)
+  save_plot_quiet(file.path(recorder_dir, "birdnet_identifications_by_species.png"), recorder_species_plot, width = 13, height = 10, dpi = 150)
+  save_plot_quiet(file.path(recorder_dir, "birdnet_identifications_by_species_by_month.png"), recorder_species_by_month_plot, width = 16, height = 12, dpi = 150)
+  save_plot_quiet(file.path(recorder_dir, "birdnet_species_composition_by_diversity_window.png"), recorder_species_composition_plot, width = 15, height = 8, dpi = 150)
+  save_plot_quiet(file.path(recorder_dir, "birdnet_monthly_diversity_metrics.png"), recorder_diversity_plot, width = 14, height = 10, dpi = 150)
+  save_plot_quiet(file.path(recorder_dir, "birdnet_monthly_diversity_metrics_daily_incidence.png"), recorder_daily_incidence_diversity_plot, width = 14, height = 10, dpi = 150)
+  save_plot_quiet(file.path(recorder_dir, "birdnet_top_10_species_detections_through_time.png"), recorder_top_species_plot, width = 14, height = 8, dpi = 150)
+  save_plot_quiet(file.path(recorder_dir, "birdnet_non_native_species_detections_through_time.png"), recorder_non_native_plot, width = 14, height = 8, dpi = 150)
+  save_plot_quiet(file.path(recorder_dir, "birdnet_periodicity.png"), recorder_periodicity_plot, width = 15, height = 11, dpi = 150)
 }
 
 message(sprintf("Analysis complete. Outputs written to: %s", output_dir))

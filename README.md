@@ -151,7 +151,7 @@ That file is combined with the BirdNET location/week range model to reduce false
 
 ## Requirements
 
-- R packages: <code>birdnetR</code>, <code>processx</code>, <code>callr</code>, <code>jsonlite</code>, <code>galah</code>
+- R packages: <code>birdnetR</code>, <code>processx</code>, <code>callr</code>, <code>jsonlite</code>
 - casks: <code>ffmpeg</code>, <code>tar</code> with <code>--zstd</code> support, <code>zstd</code>
 
 The current environment also expects BirdNET's Python dependencies to be installable through <a href="https://github.com/birdnet-team/birdnetR"><code>birdnetR</code></a>.
@@ -237,6 +237,7 @@ Edit the user-defined settings directly near the top of the script:
 - `periodicity_max_lag_bins`
 - `show_plots_in_session`
 - `ala_sanity_check_enabled`
+- `ala_sanity_check_remove_improbable`
 - `ala_auth_mode`
 - `ala_match_radius_km`
 - `ala_min_local_occurrence_records`
@@ -251,14 +252,15 @@ Edit the user-defined settings directly near the top of the script:
 - `diel_xeno_canto_per_page`
 - `diel_inaturalist_per_page`
 
-These control which existing summary CSVs are included, where the analysis outputs are written, the temporal bin size used by the plots, the diversity-analysis window length, and the minimum confidence required for a detection to be counted. The <a href="http://www.ala.org.au">Atlas of Living Australia</a> (ALA) settings control an optional pre-plot sanity check using <a href="https://galah.ala.org.au/R/"><code>galah</code></a>, which flags species as potentially suspicious when no ALA records are found within the configured radius of any recorder, or when only a few nearby records are returned. The online diel settings control an optional pre-summary filter that queries public bird-sound sources directly to identify detections that occur in an unlikely light phase.
+These control which existing summary CSVs are included, where the analysis outputs are written, the temporal bin size used by the plots, the diversity-analysis window length, and the minimum confidence required for a detection to be counted. The <a href="http://www.ala.org.au">Atlas of Living Australia</a> (ALA) settings control an optional pre-plot sanity check that queries the public ALA biocache API for species counts within the configured recorder-region radius, flagging species as potentially suspicious when no nearby records are found or when only a few nearby records are returned. The ALA count query uses the ALA `species` field so subspecies records are counted under the detected species, matching the species-level totals returned by ALA downloads more closely. If `ala_sanity_check_remove_improbable <- TRUE`, detections for species that fail the configured ALA minimum local-occurrence criterion are removed before the later summaries and plots are built. The online diel settings control an optional pre-summary filter that queries public bird-sound sources directly to identify detections that occur in an unlikely light phase.
 
 For the ALA sanity check, you can either:
 
-- use `ala_auth_mode <- "ala"` and provide `ALA_EMAIL` (optionally `ALA_USERNAME` / `ALA_PASSWORD`) through `Sys.setenv(...)` or by editing the script settings directly
+- use `ala_auth_mode <- "ala"` if you want to retain your ALA account details in the output metadata fields; the current API-based count query does not require them to run
 - use `ala_auth_mode <- "none"` to skip the ALA check entirely
 
-The current `galah` interface to the ALA uses a registered email address; username, and password fields are retained here so the settings remain explicit and compatible with the requested workflow.
+ALA username, email, and password fields are retained in the settings block for compatibility with the earlier workflow, but the current count-based sanity check does not require them. If you want ALA-failing species removed from all downstream tables and plots, set `ala_sanity_check_remove_improbable <- TRUE`.
+Set `ala_download_reason_id <- 4L` for the ALA reason `scientific research`. The current public ALA biocache count endpoint used by this script does not require that field for radius counts, but the setting is retained explicitly so the workflow records the intended ALA use case.
 
 For the online diel sanity check:
 
@@ -476,6 +478,9 @@ The analysis workflow writes:
 - `birdnet_ala_species_sanity_check.csv`  
   species-level Atlas of Living Australia sanity-check summary, including nearby-record counts, check status, and a `TRUE`/`FALSE` flag for potentially suspicious identifications that are rare or unsupported within the configured recorder-region radius
 
+- `birdnet_ala_removed_detections.csv`  
+  detection-level audit table listing each BirdNET detection removed because its species failed the configured ALA minimum local-occurrence criterion
+
 - `birdnet_ala_occurrence_counts_by_recorder.csv`  
   raw recorder-by-species Atlas of Living Australia occurrence counts returned within the configured radius around each recorder reference location, plus any query status or error message
 
@@ -550,7 +555,7 @@ In the species-frequency plots, the identification axis is shown on a log<sub>10
 The root-level analysis figures are the combined overall results across all recorders currently present in `out/`. A small set of simplified recorder-comparison plots is also written at the root level for direct cross-recorder comparison, while recorder-specific figures are written into the `recorders/` subdirectory as each recorder becomes available.
 The detections-over-time plots now include two versions: a log<sub>10</sub>-scale plot with black bars and a red trailing running mean controlled by `rolling_mean_window_days`, and a separate linear-scale plot with black bars only and no running mean. The linear-scale versions include low-alpha background bands showing local morning twilight (pink), daylight (yellow), evening twilight (pink), and night (dark blue).
 Before downstream summaries and plots are built, detections can optionally be checked against public online bird-sound evidence. The script queries <a href="https://xeno-canto.org/">`xeno-canto`</a> first and falls back to <a href="https://www.inaturalist.org/">`iNaturalist`</a> sound observations only when `xeno-canto` has no matches for that species. If a species is marked as unlikely to call during the detected light phase (`daylight`, `twilight`, or `night`), the detection is written to the online removal-audit CSV and removed from the analysis when `diel_sanity_check_remove_improbable <- TRUE`.
-Before the analysis plots are built, detected species can optionally be checked against Atlas of Living Australia occurrence records using the <code>galah</code> package. This check searches for records within a user-defined radius (default 200 km) of the recorder reference locations, flags species with no nearby records or only very small nearby record counts as potentially suspicious, and writes those flags to the ALA sanity-check CSV outputs without removing any BirdNET detections from the analysis.
+Before the analysis plots are built, detected species can optionally be checked against Atlas of Living Australia occurrence records using the public ALA biocache API. This check searches for records within a user-defined radius (default 200 km) of the recorder reference locations, counts records against the ALA `species` field so subspecies observations remain attached to the parent species, flags species with no nearby records or only very small nearby record counts as potentially suspicious, and writes those flags to the ALA sanity-check CSV outputs. When `ala_sanity_check_remove_improbable <- TRUE`, detections for species failing that configured local-occurrence threshold are also written to an ALA removal-audit CSV and removed before all later summaries and plots are generated, except when that filter would otherwise remove every remaining detection from the run.
 The count-based diversity metrics treat the number of detections per species as the abundance proxy for Shannon, Simpson, and Hill-number calculations, and are produced across user-defined diversity windows set with `diversity_window_days`. A parallel daily-incidence diversity summary is also written, and raw species richness is summarized across those same diversity windows in a separate plot/table.
 The top-species time-series plots default to 24-hour bins through `top_species_time_bin_minutes <- 24 × 60`, but that bin size can be changed directly in `scripts/analyse_birdnet_output.R`.
 In the recorder-comparison diversity figure, each recorder-by-metric panel now uses its own y-axis range so Shannon, Simpson, and Hill-number panels are scaled to their local maxima.

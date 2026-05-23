@@ -1,5 +1,5 @@
 # user-defined download settings --------------------------------------------
-source_mode <- "archive"  # "archive" or "ecosounds"
+source_mode <- "ecosounds"  # "archive" or "ecosounds"
 
 archive_file <- "/Volumes/brad0317/Documents/acoustic/GEL_D/GEL_D19082025_25102025.tar.zst"
 
