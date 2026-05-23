@@ -8,7 +8,7 @@ rolling_mean_window_days <- 7
 periodicity_max_lag_bins <- 48L
 
 ## minimum BirdNET ID confidence
-min_confidence <- 0.25
+min_confidence <- 0.1
 
 ## Atlas of Living Australia sanity check settings
 ala_auth_mode <- "ala"  # "ala" or "none"
@@ -2065,11 +2065,11 @@ recorder_comparison_style_values <- function(recorder_ids) {
   list(
     colours = stats::setNames(colourblind_friendly_species_palette(length(recorder_ids)), recorder_ids),
     linetypes = stats::setNames(
-      rep(c("solid", "longdash", "dashed", "dotdash", "twodash", "dotted"), length.out = length(recorder_ids)),
+      rep(c("solid", "solid", "solid", "solid", "solid", "solid"), length.out = length(recorder_ids)),
       recorder_ids
     ),
     linewidths = stats::setNames(
-      rep(c(0.9, 1.1, 1.3, 1.5, 1.7), length.out = length(recorder_ids)),
+      rep(c(0.9, 1.4, 1.7, 2, 2.3), length.out = length(recorder_ids)),
       recorder_ids
     )
   )
