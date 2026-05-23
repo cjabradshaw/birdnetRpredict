@@ -1,28 +1,40 @@
-# user-defined settings ----------------------------------------------------
+### user-defined settings ----------------------------------------------------
+## temporal settings
 analysis_timezone <- "Australia/Adelaide"
 bin_minutes <- 60
 diversity_window_days <- 14L
 top_species_time_bin_minutes <- 2 * 7 * 24 * 60 # e.g., 2 * 7 * 24 * 60 = 2 weeks
 rolling_mean_window_days <- 7
-min_confidence <- 0.25
 periodicity_max_lag_bins <- 48L
-ala_sanity_check_enabled <- TRUE
-ala_sanity_check_remove_improbable <- TRUE
+
+## minimum BirdNET ID confidence
+min_confidence <- 0.25
+
+## Atlas of Living Australia sanity check settings
 ala_auth_mode <- "ala"  # "ala" or "none"
-ala_match_radius_km <- 200 # within x km of recording location to consider for ALA occurrence records
-ala_min_local_occurrence_records <- 2L # at least x ALA records within radius to consider a species as "supported in region"
-ala_download_reason_id <- 4L # ALA download reason "scientific research"
+# credentials
 ala_user_name <- trimws(Sys.getenv("ALA_USERNAME", unset = ""))
 ala_email <- trimws(Sys.getenv("ALA_EMAIL", unset = ""))
 ala_password <- Sys.getenv("ALA_PASSWORD", unset = "")
+ala_download_reason_id <- 4L # ALA download reason "scientific research"
+# filter
+ala_sanity_check_enabled <- TRUE
+ala_sanity_check_remove_improbable <- TRUE # if ALA sanity check enabled, remove BirdNET-identified species not meeting ALA criteria below
+ala_match_radius_km <- 200 # within x km of recording location to consider for ALA occurrence records
+ala_min_local_occurrence_records <- 2L # at least x ALA records within radius to consider a species as "supported in region"
+
+## recording time-of-day check
 diel_sanity_check_enabled <- TRUE
-diel_sanity_check_remove_improbable <- TRUE
+diel_sanity_check_remove_improbable <- TRUE # remove BirdNET-identified species where calling pattern not verified by xeno-canto or iNaturalist recording times
 xeno_canto_api_key <- trimws(Sys.getenv("XENO_CANTO_API_KEY", unset = ""))
 diel_min_reference_record_count <- 2L # at least x records in xeno-canto or iNaturalist with usable data for sanity check of diel patterns
 diel_xeno_canto_per_page <- 100L
 diel_inaturalist_per_page <- 100L
+
+## show plots?
 show_plots_in_session <- TRUE
 # -------------------------------------------------------------------------
+
 
 get_current_file_path <- function() {
   command_args <- commandArgs(trailingOnly = FALSE)
