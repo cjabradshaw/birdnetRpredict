@@ -201,6 +201,284 @@ read_non_native_species_lookup <- function(lookup_csv) {
   lookup_df[!duplicated(lookup_df$scientific_name), , drop = FALSE]
 }
 
+normalise_taxon_lookup_text <- function(text_value) {
+  tolower(trimws(gsub("\\s+", " ", as.character(text_value))))
+}
+
+strip_taxonomic_authorship <- function(name_text) {
+  name_text <- trimws(gsub("\\s+", " ", as.character(name_text)))
+  if (!nzchar(name_text)) {
+    return("")
+  }
+
+  parts <- strsplit(name_text, "\\s+")[[1]]
+  keep_parts <- character()
+  for (part in parts) {
+    if (grepl("^[A-Z][A-Za-z.-]+$", part) ||
+        grepl("^\\([A-Z][A-Za-z.-]+\\)$", part) ||
+        grepl("^[a-z][A-Za-z.-]*$", part)) {
+      keep_parts <- c(keep_parts, part)
+    } else {
+      break
+    }
+  }
+
+  trimws(paste(keep_parts, collapse = " "))
+}
+
+read_ioc_taxonomy_lookup <- function(repo_root) {
+  lookup_files <- list.files(
+    file.path(repo_root, "data", "species_lists"),
+    pattern = "_IOC\\.csv$",
+    recursive = TRUE,
+    full.names = TRUE
+  )
+  empty_lookup <- data.frame(
+    birdnet_scientific = character(),
+    birdnet_common = character(),
+    ioc_scientific = character(),
+    ioc_known_synonyms = character(),
+    stringsAsFactors = FALSE
+  )
+
+  if (length(lookup_files) == 0) {
+    return(empty_lookup)
+  }
+
+  lookup_tables <- lapply(lookup_files, function(path) {
+    table <- tryCatch(read.csv(path, stringsAsFactors = FALSE), error = function(error) NULL)
+    if (is.null(table)) {
+      return(NULL)
+    }
+    required_columns <- c("birdnet_scientific", "birdnet_common", "ioc_scientific", "ioc_known_synonyms")
+    if (!all(required_columns %in% names(table))) {
+      return(NULL)
+    }
+    table[, required_columns, drop = FALSE]
+  })
+  lookup_tables <- Filter(Negate(is.null), lookup_tables)
+
+  if (length(lookup_tables) == 0) {
+    return(empty_lookup)
+  }
+
+  lookup_df <- bind_rows_list(lookup_tables, empty_template = empty_lookup)
+  lookup_df$birdnet_scientific <- trimws(as.character(lookup_df$birdnet_scientific))
+  lookup_df$birdnet_common <- trimws(as.character(lookup_df$birdnet_common))
+  lookup_df$ioc_scientific <- trimws(as.character(lookup_df$ioc_scientific))
+  lookup_df$ioc_known_synonyms <- trimws(as.character(lookup_df$ioc_known_synonyms))
+  lookup_df <- lookup_df[nzchar(lookup_df$birdnet_scientific), , drop = FALSE]
+  lookup_df
+}
+
+apply_ioc_scientific_names <- function(data_frame, ioc_lookup) {
+  if (nrow(data_frame) == 0 || !"scientific_name" %in% names(data_frame) || is.null(ioc_lookup) || nrow(ioc_lookup) == 0) {
+    return(data_frame)
+  }
+
+  lookup_df <- ioc_lookup[, c("birdnet_scientific", "ioc_scientific"), drop = FALSE]
+  lookup_df$birdnet_scientific <- trimws(as.character(lookup_df$birdnet_scientific))
+  lookup_df$ioc_scientific <- trimws(as.character(lookup_df$ioc_scientific))
+  lookup_df <- lookup_df[nzchar(lookup_df$birdnet_scientific) & nzchar(lookup_df$ioc_scientific), , drop = FALSE]
+  lookup_df <- lookup_df[!duplicated(normalise_taxon_lookup_text(lookup_df$birdnet_scientific)), , drop = FALSE]
+  if (nrow(lookup_df) == 0) {
+    return(data_frame)
+  }
+
+  lookup_keys <- normalise_taxon_lookup_text(lookup_df$birdnet_scientific)
+  match_index <- match(normalise_taxon_lookup_text(data_frame$scientific_name), lookup_keys)
+  replacement_names <- lookup_df$ioc_scientific[match_index]
+  replace_rows <- !is.na(replacement_names) & nzchar(replacement_names)
+  data_frame$scientific_name[replace_rows] <- replacement_names[replace_rows]
+  data_frame
+}
+
+build_ala_taxon_query_candidates <- function(scientific_name,
+                                             common_name = "",
+                                             ioc_lookup = NULL) {
+  candidate_df <- data.frame(
+    query_name = character(),
+    query_field = character(),
+    resolution_source = character(),
+    resolution_note = character(),
+    stringsAsFactors = FALSE
+  )
+
+  add_candidate <- function(query_name, query_field, resolution_source, resolution_note = "") {
+    query_name <- trimws(gsub("\\s+", " ", as.character(query_name)))
+    query_field <- trimws(as.character(query_field))
+    resolution_source <- trimws(as.character(resolution_source))
+    resolution_note <- trimws(as.character(resolution_note))
+    if (!nzchar(query_name) || !nzchar(query_field) || !nzchar(resolution_source)) {
+      return(NULL)
+    }
+    data.frame(
+      query_name = query_name,
+      query_field = query_field,
+      resolution_source = resolution_source,
+      resolution_note = resolution_note,
+      stringsAsFactors = FALSE
+    )
+  }
+
+  scientific_name <- trimws(as.character(scientific_name))
+  common_name <- trimws(as.character(common_name))
+  candidate_df <- bind_rows_list(
+    list(candidate_df, add_candidate(scientific_name, "species", "birdnet_scientific_name", scientific_name)),
+    empty_template = candidate_df
+  )
+
+  if (!is.null(ioc_lookup) && nrow(ioc_lookup) > 0) {
+    scientific_name_key <- normalise_taxon_lookup_text(scientific_name)
+    ioc_rows <- ioc_lookup[
+      normalise_taxon_lookup_text(ioc_lookup$birdnet_scientific) == scientific_name_key |
+        normalise_taxon_lookup_text(ioc_lookup$ioc_scientific) == scientific_name_key,
+      ,
+      drop = FALSE
+    ]
+    if (nrow(ioc_rows) > 0) {
+      ioc_rows <- ioc_rows[1, , drop = FALSE]
+      if (nzchar(ioc_rows$ioc_scientific[[1]]) &&
+          normalise_taxon_lookup_text(ioc_rows$ioc_scientific[[1]]) != normalise_taxon_lookup_text(scientific_name)) {
+        candidate_df <- bind_rows_list(
+          list(candidate_df, add_candidate(ioc_rows$ioc_scientific[[1]], "species", "ioc_scientific_name", ioc_rows$ioc_scientific[[1]])),
+          empty_template = candidate_df
+        )
+      }
+      synonym_values <- trimws(unlist(strsplit(ioc_rows$ioc_known_synonyms[[1]], ";", fixed = TRUE), use.names = FALSE))
+      synonym_values <- synonym_values[nzchar(synonym_values)]
+      if (length(synonym_values) > 0) {
+        synonym_candidates <- lapply(synonym_values, function(name_value) {
+          add_candidate(name_value, "scientificName", "ioc_known_synonym", name_value)
+        })
+        candidate_df <- bind_rows_list(c(list(candidate_df), synonym_candidates), empty_template = candidate_df)
+      }
+    }
+  }
+
+  extract_bie_candidates <- function(search_text, source_prefix, require_common_name_match = FALSE) {
+    search_text <- trimws(as.character(search_text))
+    if (!nzchar(search_text)) {
+      return(candidate_df[0, , drop = FALSE])
+    }
+    search_url <- paste0(
+      "https://bie-ws.ala.org.au/ws/search.json?q=",
+      utils::URLencode(search_text, reserved = TRUE)
+    )
+    search_response <- tryCatch(fetch_json_url(search_url), error = function(error) NULL)
+    if (is.null(search_response) ||
+        !"searchResults" %in% names(search_response) ||
+        !"results" %in% names(search_response$searchResults)) {
+      return(candidate_df[0, , drop = FALSE])
+    }
+
+    results_df <- search_response$searchResults$results
+    if (is.null(results_df) || nrow(results_df) == 0) {
+      return(candidate_df[0, , drop = FALSE])
+    }
+
+    results_df <- results_df[
+      "class" %in% names(results_df) &
+        toupper(trimws(as.character(results_df$class))) == "AVES" &
+        "rank" %in% names(results_df) &
+        tolower(trimws(as.character(results_df$rank))) %in% c("species", "subspecies", "unranked"),
+      ,
+      drop = FALSE
+    ]
+
+    if (require_common_name_match && nrow(results_df) > 0) {
+      common_name_key <- normalise_taxon_lookup_text(common_name)
+      common_matches <- vapply(seq_len(nrow(results_df)), function(index) {
+        result_common <- normalise_taxon_lookup_text(paste(
+          if ("commonNameSingle" %in% names(results_df)) results_df$commonNameSingle[[index]] else "",
+          if ("commonName" %in% names(results_df)) results_df$commonName[[index]] else ""
+        ))
+        nzchar(common_name_key) && grepl(common_name_key, result_common, fixed = TRUE)
+      }, logical(1))
+      results_df <- results_df[common_matches, , drop = FALSE]
+    }
+
+    if (nrow(results_df) == 0) {
+      return(candidate_df[0, , drop = FALSE])
+    }
+
+    candidate_rows <- lapply(seq_len(min(10, nrow(results_df))), function(index) {
+      result_row <- results_df[index, , drop = FALSE]
+      result_candidates <- list()
+      if ("species" %in% names(result_row)) {
+        species_name <- strip_taxonomic_authorship(result_row$species[[1]])
+        if (nzchar(species_name)) {
+          result_candidates[[length(result_candidates) + 1L]] <- add_candidate(
+            species_name,
+            "species",
+            paste0(source_prefix, "_species"),
+            if ("scientificName" %in% names(result_row)) result_row$scientificName[[1]] else species_name
+          )
+        }
+      }
+      if ("scientificName" %in% names(result_row)) {
+        resolved_scientific <- strip_taxonomic_authorship(result_row$scientificName[[1]])
+        if (nzchar(resolved_scientific)) {
+          result_candidates[[length(result_candidates) + 1L]] <- add_candidate(
+            resolved_scientific,
+            "scientificName",
+            paste0(source_prefix, "_scientific_name"),
+            resolved_scientific
+          )
+        }
+      }
+      if ("acceptedConceptName" %in% names(result_row)) {
+        accepted_name <- strip_taxonomic_authorship(result_row$acceptedConceptName[[1]])
+        if (nzchar(accepted_name)) {
+          accepted_field <- if (length(strsplit(accepted_name, "\\s+")[[1]]) <= 2 && !grepl("\\(", accepted_name, fixed = TRUE)) {
+            "species"
+          } else {
+            "scientificName"
+          }
+          result_candidates[[length(result_candidates) + 1L]] <- add_candidate(
+            accepted_name,
+            accepted_field,
+            paste0(source_prefix, "_accepted_name"),
+            accepted_name
+          )
+        }
+      }
+      if ("subspecies" %in% names(result_row)) {
+        subspecies_name <- strip_taxonomic_authorship(result_row$subspecies[[1]])
+        if (nzchar(subspecies_name)) {
+          result_candidates[[length(result_candidates) + 1L]] <- add_candidate(
+            subspecies_name,
+            "scientificName",
+            paste0(source_prefix, "_subspecies"),
+            subspecies_name
+          )
+        }
+      }
+      bind_rows_list(result_candidates, empty_template = candidate_df[0, , drop = FALSE])
+    })
+
+    bind_rows_list(candidate_rows, empty_template = candidate_df[0, , drop = FALSE])
+  }
+
+  scientific_candidates <- extract_bie_candidates(scientific_name, "ala_bie_scientific", require_common_name_match = FALSE)
+  common_candidates <- extract_bie_candidates(common_name, "ala_bie_common_name", require_common_name_match = TRUE)
+  candidate_df <- bind_rows_list(
+    list(candidate_df, scientific_candidates, common_candidates),
+    empty_template = candidate_df
+  )
+
+  if (nrow(candidate_df) == 0) {
+    return(candidate_df)
+  }
+
+  candidate_df$query_name_key <- normalise_taxon_lookup_text(candidate_df$query_name)
+  candidate_df$query_field_key <- normalise_taxon_lookup_text(candidate_df$query_field)
+  candidate_df <- candidate_df[!duplicated(candidate_df[, c("query_name_key", "query_field_key"), drop = FALSE]), , drop = FALSE]
+  candidate_df$query_name_key <- NULL
+  candidate_df$query_field_key <- NULL
+  candidate_df
+}
+
 normalise_diel_light_phase <- function(light_phase) {
   clean_phase <- tolower(trimws(as.character(light_phase)))
   clean_phase[clean_phase %in% c("day", "daytime")] <- "daylight"
@@ -953,24 +1231,37 @@ resolve_ala_credentials <- function(auth_mode,
 }
 
 query_ala_occurrence_counts_by_recorder <- function(recorder_reference_locations,
-                                                    detected_species,
-                                                    radius_km) {
+                                                    species_reference,
+                                                    radius_km,
+                                                    ioc_lookup = NULL) {
   empty_df <- data.frame(
     recorder_id = character(),
     recording_latitude = numeric(),
     recording_longitude = numeric(),
     query_radius_km = numeric(),
     scientific_name = character(),
+    common_name = character(),
     ala_occurrence_count = numeric(),
+    ala_query_name_used = character(),
+    ala_query_field_used = character(),
+    ala_taxonomy_resolution_source = character(),
+    ala_taxonomy_resolution_note = character(),
     query_status = character(),
     query_message = character(),
     stringsAsFactors = FALSE
   )
 
-  detected_species <- trimws(as.character(detected_species))
-  detected_species <- sort(unique(detected_species[nzchar(detected_species)]))
+  if (nrow(species_reference) == 0) {
+    return(empty_df)
+  }
 
-  if (nrow(recorder_reference_locations) == 0 || length(detected_species) == 0) {
+  species_reference <- species_reference[, c("scientific_name", "common_name"), drop = FALSE]
+  species_reference$scientific_name <- trimws(as.character(species_reference$scientific_name))
+  species_reference$common_name <- trimws(as.character(species_reference$common_name))
+  species_reference <- species_reference[nzchar(species_reference$scientific_name), , drop = FALSE]
+  species_reference <- species_reference[!duplicated(species_reference$scientific_name), , drop = FALSE]
+
+  if (nrow(recorder_reference_locations) == 0 || nrow(species_reference) == 0) {
     return(empty_df)
   }
 
@@ -979,30 +1270,77 @@ query_ala_occurrence_counts_by_recorder <- function(recorder_reference_locations
     query_result <- tryCatch(
       {
         counts_df <- bind_rows_list(
-          lapply(detected_species, function(scientific_name) {
-            request_url <- paste0(
-              "https://biocache-ws.ala.org.au/ws/occurrences/search?",
-              "q=",
-              utils::URLencode(sprintf("species:\"%s\"", scientific_name), reserved = TRUE),
-              "&lat=",
-              recorder_row$recording_latitude[[1]],
-              "&lon=",
-              recorder_row$recording_longitude[[1]],
-              "&radius=",
-              radius_km,
-              "&pageSize=0"
-            )
-
-            response <- fetch_json_url(request_url)
-            data.frame(
+          lapply(seq_len(nrow(species_reference)), function(species_index) {
+            scientific_name <- species_reference$scientific_name[[species_index]]
+            common_name <- species_reference$common_name[[species_index]]
+            candidate_df <- build_ala_taxon_query_candidates(
               scientific_name = scientific_name,
-              ala_occurrence_count = suppressWarnings(as.numeric(response$totalRecords[[1]])),
-              stringsAsFactors = FALSE
+              common_name = common_name,
+              ioc_lookup = ioc_lookup
             )
+            candidate_counts <- bind_rows_list(
+              lapply(seq_len(nrow(candidate_df)), function(candidate_index) {
+                request_url <- paste0(
+                  "https://biocache-ws.ala.org.au/ws/occurrences/search?",
+                  "q=",
+                  utils::URLencode(
+                    sprintf("%s:\"%s\"", candidate_df$query_field[[candidate_index]], candidate_df$query_name[[candidate_index]]),
+                    reserved = TRUE
+                  ),
+                  "&lat=",
+                  recorder_row$recording_latitude[[1]],
+                  "&lon=",
+                  recorder_row$recording_longitude[[1]],
+                  "&radius=",
+                  radius_km,
+                  "&pageSize=0"
+                )
+                response <- fetch_json_url(request_url)
+                data.frame(
+                  scientific_name = scientific_name,
+                  common_name = common_name,
+                  ala_occurrence_count = suppressWarnings(as.numeric(response$totalRecords[[1]])),
+                  ala_query_name_used = candidate_df$query_name[[candidate_index]],
+                  ala_query_field_used = candidate_df$query_field[[candidate_index]],
+                  ala_taxonomy_resolution_source = candidate_df$resolution_source[[candidate_index]],
+                  ala_taxonomy_resolution_note = candidate_df$resolution_note[[candidate_index]],
+                  stringsAsFactors = FALSE
+                )
+              }),
+              empty_template = data.frame(
+                scientific_name = character(),
+                common_name = character(),
+                ala_occurrence_count = numeric(),
+                ala_query_name_used = character(),
+                ala_query_field_used = character(),
+                ala_taxonomy_resolution_source = character(),
+                ala_taxonomy_resolution_note = character(),
+                stringsAsFactors = FALSE
+              )
+            )
+            if (nrow(candidate_counts) == 0) {
+              return(data.frame(
+                scientific_name = scientific_name,
+                common_name = common_name,
+                ala_occurrence_count = 0,
+                ala_query_name_used = scientific_name,
+                ala_query_field_used = "species",
+                ala_taxonomy_resolution_source = "birdnet_scientific_name",
+                ala_taxonomy_resolution_note = scientific_name,
+                stringsAsFactors = FALSE
+              ))
+            }
+            best_index <- order(-candidate_counts$ala_occurrence_count, seq_len(nrow(candidate_counts)))[1]
+            candidate_counts[best_index, , drop = FALSE]
           }),
           empty_template = data.frame(
             scientific_name = character(),
+            common_name = character(),
             ala_occurrence_count = numeric(),
+            ala_query_name_used = character(),
+            ala_query_field_used = character(),
+            ala_taxonomy_resolution_source = character(),
+            ala_taxonomy_resolution_note = character(),
             stringsAsFactors = FALSE
           )
         )
@@ -1014,7 +1352,12 @@ query_ala_occurrence_counts_by_recorder <- function(recorder_reference_locations
             recording_longitude = recorder_row$recording_longitude[[1]],
             query_radius_km = radius_km,
             scientific_name = NA_character_,
+            common_name = NA_character_,
             ala_occurrence_count = NA_real_,
+            ala_query_name_used = "",
+            ala_query_field_used = "",
+            ala_taxonomy_resolution_source = "",
+            ala_taxonomy_resolution_note = "",
             query_status = "ok",
             query_message = "",
             stringsAsFactors = FALSE
@@ -1034,7 +1377,12 @@ query_ala_occurrence_counts_by_recorder <- function(recorder_reference_locations
             "recording_longitude",
             "query_radius_km",
             "scientific_name",
+            "common_name",
             "ala_occurrence_count",
+            "ala_query_name_used",
+            "ala_query_field_used",
+            "ala_taxonomy_resolution_source",
+            "ala_taxonomy_resolution_note",
             "query_status",
             "query_message"
           ), drop = FALSE]
@@ -1047,7 +1395,12 @@ query_ala_occurrence_counts_by_recorder <- function(recorder_reference_locations
           recording_longitude = recorder_row$recording_longitude[[1]],
           query_radius_km = radius_km,
           scientific_name = NA_character_,
+          common_name = NA_character_,
           ala_occurrence_count = NA_real_,
+          ala_query_name_used = "",
+          ala_query_field_used = "",
+          ala_taxonomy_resolution_source = "",
+          ala_taxonomy_resolution_note = "",
           query_status = "query_failed",
           query_message = conditionMessage(error),
           stringsAsFactors = FALSE
@@ -1070,6 +1423,7 @@ build_ala_species_sanity_check <- function(species_counts,
                                            radius_km,
                                            min_local_occurrence_records,
                                            download_reason_id,
+                                           ioc_lookup,
                                            enabled = TRUE) {
   empty_summary <- data.frame(
     scientific_name = character(),
@@ -1082,6 +1436,10 @@ build_ala_species_sanity_check <- function(species_counts,
     ala_total_local_occurrence_count = numeric(),
     ala_max_local_occurrence_count = numeric(),
     ala_recorder_count_with_local_records = integer(),
+    ala_query_name_used = character(),
+    ala_query_field_used = character(),
+    ala_taxonomy_resolution_source = character(),
+    ala_taxonomy_resolution_note = character(),
     ala_query_status = character(),
     ala_query_message = character(),
     ala_sanity_status = character(),
@@ -1094,7 +1452,12 @@ build_ala_species_sanity_check <- function(species_counts,
     recording_longitude = numeric(),
     query_radius_km = numeric(),
     scientific_name = character(),
+    common_name = character(),
     ala_occurrence_count = numeric(),
+    ala_query_name_used = character(),
+    ala_query_field_used = character(),
+    ala_taxonomy_resolution_source = character(),
+    ala_taxonomy_resolution_note = character(),
     query_status = character(),
     query_message = character(),
     stringsAsFactors = FALSE
@@ -1111,6 +1474,10 @@ build_ala_species_sanity_check <- function(species_counts,
   summary_df$ala_total_local_occurrence_count <- NA_real_
   summary_df$ala_max_local_occurrence_count <- NA_real_
   summary_df$ala_recorder_count_with_local_records <- NA_integer_
+  summary_df$ala_query_name_used <- ""
+  summary_df$ala_query_field_used <- ""
+  summary_df$ala_taxonomy_resolution_source <- ""
+  summary_df$ala_taxonomy_resolution_note <- ""
   summary_df$ala_query_status <- "not_run"
   summary_df$ala_query_message <- ""
   summary_df$ala_sanity_status <- "not_run"
@@ -1163,8 +1530,9 @@ build_ala_species_sanity_check <- function(species_counts,
 
   by_recorder_df <- query_ala_occurrence_counts_by_recorder(
     recorder_reference_locations = recorder_reference_locations,
-    detected_species = summary_df$scientific_name,
-    radius_km = radius_km
+    species_reference = summary_df[, c("scientific_name", "common_name"), drop = FALSE],
+    radius_km = radius_km,
+    ioc_lookup = ioc_lookup
   )
 
   failed_rows <- by_recorder_df[by_recorder_df$query_status == "query_failed", , drop = FALSE]
@@ -1210,6 +1578,19 @@ build_ala_species_sanity_check <- function(species_counts,
     summary_df$ala_total_local_occurrence_count <- total_counts$ala_total_local_occurrence_count[total_match]
     summary_df$ala_max_local_occurrence_count <- max_counts$ala_max_local_occurrence_count[max_match]
     summary_df$ala_recorder_count_with_local_records <- recorder_presence$ala_recorder_count_with_local_records[presence_match]
+
+    resolution_rows <- successful_species_rows[!duplicated(successful_species_rows$scientific_name), c(
+      "scientific_name",
+      "ala_query_name_used",
+      "ala_query_field_used",
+      "ala_taxonomy_resolution_source",
+      "ala_taxonomy_resolution_note"
+    ), drop = FALSE]
+    resolution_match <- match(summary_df$scientific_name, resolution_rows$scientific_name)
+    summary_df$ala_query_name_used <- resolution_rows$ala_query_name_used[resolution_match]
+    summary_df$ala_query_field_used <- resolution_rows$ala_query_field_used[resolution_match]
+    summary_df$ala_taxonomy_resolution_source <- resolution_rows$ala_taxonomy_resolution_source[resolution_match]
+    summary_df$ala_taxonomy_resolution_note <- resolution_rows$ala_taxonomy_resolution_note[resolution_match]
   }
 
   summary_df$ala_total_local_occurrence_count[is.na(summary_df$ala_total_local_occurrence_count)] <- 0
@@ -1242,6 +1623,10 @@ build_ala_species_sanity_check <- function(species_counts,
       "ala_total_local_occurrence_count",
       "ala_max_local_occurrence_count",
       "ala_recorder_count_with_local_records",
+      "ala_query_name_used",
+      "ala_query_field_used",
+      "ala_taxonomy_resolution_source",
+      "ala_taxonomy_resolution_note",
       "ala_query_status",
       "ala_query_message",
       "ala_sanity_status",
@@ -1263,6 +1648,10 @@ append_ala_sanity_columns <- function(data_frame, ala_summary) {
     "ala_total_local_occurrence_count",
     "ala_max_local_occurrence_count",
     "ala_recorder_count_with_local_records",
+    "ala_query_name_used",
+    "ala_query_field_used",
+    "ala_taxonomy_resolution_source",
+    "ala_taxonomy_resolution_note",
     "ala_query_status",
     "ala_query_message",
     "ala_sanity_status",
@@ -4522,6 +4911,7 @@ if (!requireNamespace("ggplot2", quietly = TRUE)) {
 }
 
 repo_root <- find_repo_root(get_current_file_path())
+ala_ioc_taxonomy_lookup <- read_ioc_taxonomy_lookup(repo_root)
 non_native_species_lookup_csv <- file.path(
   repo_root,
   "data",
@@ -4705,6 +5095,7 @@ if (anyNA(combined_detections$date_time)) {
 }
 
 combined_detections <- combined_detections[order(combined_detections$date_time, combined_detections$scientific_name), , drop = FALSE]
+combined_detections <- apply_ioc_scientific_names(combined_detections, ala_ioc_taxonomy_lookup)
 combined_detections$common_name <- vapply(combined_detections$common_name, normalise_common_name, character(1))
 combined_detections$species_label <- paste0(combined_detections$common_name, " (", combined_detections$scientific_name, ")")
 combined_detections$recorder_id <- vapply(combined_detections$source_summary_csv, extract_recorder_id, character(1))
@@ -4826,6 +5217,10 @@ ala_species_sanity_summary$ala_min_local_occurrence_records <- as.integer(ala_mi
 ala_species_sanity_summary$ala_total_local_occurrence_count <- NA_real_
 ala_species_sanity_summary$ala_max_local_occurrence_count <- NA_real_
 ala_species_sanity_summary$ala_recorder_count_with_local_records <- NA_integer_
+ala_species_sanity_summary$ala_query_name_used <- ""
+ala_species_sanity_summary$ala_query_field_used <- ""
+ala_species_sanity_summary$ala_taxonomy_resolution_source <- ""
+ala_species_sanity_summary$ala_taxonomy_resolution_note <- ""
 ala_species_sanity_summary$ala_query_status <- "not_run"
 ala_species_sanity_summary$ala_query_message <- ""
 ala_species_sanity_summary$ala_sanity_status <- "not_run"
@@ -4836,7 +5231,12 @@ ala_occurrence_counts_by_recorder <- data.frame(
   recording_longitude = numeric(),
   query_radius_km = numeric(),
   scientific_name = character(),
+  common_name = character(),
   ala_occurrence_count = numeric(),
+  ala_query_name_used = character(),
+  ala_query_field_used = character(),
+  ala_taxonomy_resolution_source = character(),
+  ala_taxonomy_resolution_note = character(),
   query_status = character(),
   query_message = character(),
   stringsAsFactors = FALSE
@@ -4871,6 +5271,7 @@ ala_sanity_check <- tryCatch(
     radius_km = ala_match_radius_km,
     min_local_occurrence_records = ala_min_local_occurrence_records,
     download_reason_id = ala_download_reason_id,
+    ioc_lookup = ala_ioc_taxonomy_lookup,
     enabled = ala_sanity_check_enabled
   ),
   error = function(error) {
@@ -4881,6 +5282,10 @@ ala_sanity_check <- tryCatch(
     fallback_summary$ala_total_local_occurrence_count <- NA_real_
     fallback_summary$ala_max_local_occurrence_count <- NA_real_
     fallback_summary$ala_recorder_count_with_local_records <- NA_integer_
+    fallback_summary$ala_query_name_used <- ""
+    fallback_summary$ala_query_field_used <- ""
+    fallback_summary$ala_taxonomy_resolution_source <- ""
+    fallback_summary$ala_taxonomy_resolution_note <- ""
     fallback_summary$ala_query_status <- "query_failed"
     fallback_summary$ala_query_message <- conditionMessage(error)
     fallback_summary$ala_sanity_status <- "not_run_query_failed"
