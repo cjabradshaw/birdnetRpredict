@@ -605,7 +605,20 @@ fetch_json_url <- function(url_text) {
   if (!requireNamespace("jsonlite", quietly = TRUE)) {
     stop("R package 'jsonlite' is required for online diel sanity checks.")
   }
-  jsonlite::fromJSON(url_text, flatten = TRUE)
+  cache_env <- get0(".birdnet_json_cache", envir = .GlobalEnv, inherits = FALSE)
+  if (is.null(cache_env) || !is.environment(cache_env)) {
+    cache_env <- new.env(parent = emptyenv())
+    assign(".birdnet_json_cache", cache_env, envir = .GlobalEnv)
+  }
+
+  cache_key <- as.character(url_text)[1]
+  if (exists(cache_key, envir = cache_env, inherits = FALSE)) {
+    return(get(cache_key, envir = cache_env, inherits = FALSE))
+  }
+
+  response <- jsonlite::fromJSON(url_text, flatten = TRUE)
+  assign(cache_key, response, envir = cache_env)
+  response
 }
 
 classify_reference_record_light_phases <- function(reference_records) {
@@ -1299,6 +1312,51 @@ query_ala_occurrence_counts_by_recorder <- function(recorder_reference_locations
     return(empty_df)
   }
 
+  candidate_template <- data.frame(
+    scientific_name = character(),
+    common_name = character(),
+    query_name = character(),
+    query_field = character(),
+    resolution_source = character(),
+    resolution_note = character(),
+    stringsAsFactors = FALSE
+  )
+  species_candidate_lookup <- bind_rows_list(
+    lapply(seq_len(nrow(species_reference)), function(species_index) {
+      scientific_name <- species_reference$scientific_name[[species_index]]
+      common_name <- species_reference$common_name[[species_index]]
+      candidate_df <- build_ala_taxon_query_candidates(
+        scientific_name = scientific_name,
+        common_name = common_name,
+        ioc_lookup = ioc_lookup
+      )
+      if (nrow(candidate_df) == 0) {
+        return(candidate_template[0, , drop = FALSE])
+      }
+      transform(
+        candidate_df,
+        scientific_name = scientific_name,
+        common_name = common_name
+      )[, c(
+        "scientific_name",
+        "common_name",
+        "query_name",
+        "query_field",
+        "resolution_source",
+        "resolution_note"
+      ), drop = FALSE]
+    }),
+    empty_template = candidate_template
+  )
+  species_candidate_lookup_list <- if (nrow(species_candidate_lookup) > 0) {
+    split(
+      species_candidate_lookup[, c("query_name", "query_field", "resolution_source", "resolution_note"), drop = FALSE],
+      species_candidate_lookup$scientific_name
+    )
+  } else {
+    list()
+  }
+
   recorder_results <- lapply(seq_len(nrow(recorder_reference_locations)), function(index) {
     recorder_row <- recorder_reference_locations[index, , drop = FALSE]
     query_result <- tryCatch(
@@ -1307,11 +1365,10 @@ query_ala_occurrence_counts_by_recorder <- function(recorder_reference_locations
           lapply(seq_len(nrow(species_reference)), function(species_index) {
             scientific_name <- species_reference$scientific_name[[species_index]]
             common_name <- species_reference$common_name[[species_index]]
-            candidate_df <- build_ala_taxon_query_candidates(
-              scientific_name = scientific_name,
-              common_name = common_name,
-              ioc_lookup = ioc_lookup
-            )
+            candidate_df <- species_candidate_lookup_list[[scientific_name]]
+            if (is.null(candidate_df)) {
+              candidate_df <- candidate_template[0, c("query_name", "query_field", "resolution_source", "resolution_note"), drop = FALSE]
+            }
             candidate_counts <- bind_rows_list(
               lapply(seq_len(nrow(candidate_df)), function(candidate_index) {
                 request_url <- paste0(
