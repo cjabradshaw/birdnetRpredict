@@ -4,11 +4,11 @@ analysis_timezone <- "Australia/Adelaide"
 bin_minutes <- 60
 diversity_window_days <- 14L
 top_species_time_bin_minutes <- 2 * 7 * 24 * 60 # e.g., 2 * 7 * 24 * 60 = 2 weeks
-rolling_mean_window_days <- 7
+rolling_mean_window_days <- 14
 periodicity_max_lag_bins <- 48L
 
 ## minimum BirdNET ID confidence
-min_confidence <- 0.1
+min_confidence <- 0.25
 
 ## Atlas of Living Australia sanity check settings
 ala_auth_mode <- "ala"  # "ala" or "none"
@@ -7351,133 +7351,133 @@ save_plot_quiet(
   plot = time_series_plot,
   width = 12,
   height = 7,
-  dpi = 150
+  dpi = 300
 )
 save_plot_quiet(
   filename = file.path(output_dir, "birdnet_identifications_over_time_linear.png"),
   plot = time_series_plot_linear,
   width = 12,
   height = 7,
-  dpi = 150
+  dpi = 300
 )
 save_plot_quiet(
   filename = file.path(output_dir, "birdnet_cumulative_new_species.png"),
   plot = cumulative_species_plot,
   width = 12,
   height = 7,
-  dpi = 150
+  dpi = 300
 )
 save_plot_quiet(
   filename = file.path(output_dir, "birdnet_identifications_by_species.png"),
   plot = species_counts_plot,
   width = 13,
   height = 10,
-  dpi = 150
+  dpi = 300
 )
 save_plot_quiet(
   filename = file.path(output_dir, "birdnet_identifications_by_species_by_month.png"),
   plot = species_counts_by_month_plot,
   width = 16,
   height = 12,
-  dpi = 150
+  dpi = 300
 )
 save_plot_quiet(
   filename = file.path(output_dir, "birdnet_monthly_diversity_metrics.png"),
   plot = monthly_diversity_plot,
   width = 14,
   height = 10,
-  dpi = 150
+  dpi = 300
 )
 save_plot_quiet(
   filename = file.path(output_dir, "birdnet_monthly_diversity_metrics_daily_incidence.png"),
   plot = monthly_diversity_daily_incidence_plot,
   width = 14,
   height = 10,
-  dpi = 150
+  dpi = 300
 )
 save_plot_quiet(
   filename = file.path(output_dir, "birdnet_raw_species_richness_by_diversity_window.png"),
   plot = monthly_raw_species_richness_plot,
   width = 12,
   height = 7,
-  dpi = 150
+  dpi = 300
 )
 save_plot_quiet(
   filename = file.path(output_dir, "birdnet_identifications_over_time_recorder_comparison.png"),
   plot = time_series_recorder_comparison_plot,
   width = 14,
   height = 7,
-  dpi = 150
+  dpi = 300
 )
 save_plot_quiet(
   filename = file.path(output_dir, "birdnet_cumulative_new_species_recorder_comparison.png"),
   plot = cumulative_species_recorder_comparison_plot,
   width = 14,
   height = 7,
-  dpi = 150
+  dpi = 300
 )
 save_plot_quiet(
   filename = file.path(output_dir, "birdnet_total_diversity_recorder_comparison.png"),
   plot = total_diversity_recorder_comparison_plot,
   width = 14,
   height = 7,
-  dpi = 150
+  dpi = 300
 )
 save_plot_quiet(
   filename = file.path(output_dir, "birdnet_hill_q2_recorder_comparison.png"),
   plot = hill_q2_recorder_comparison_plot,
   width = 14,
   height = 7,
-  dpi = 150
+  dpi = 300
 )
 save_plot_quiet(
   filename = file.path(output_dir, "birdnet_top_10_species_detections_through_time.png"),
   plot = top_species_plot,
   width = 14,
   height = 8,
-  dpi = 150
+  dpi = 300
 )
 save_plot_quiet(
   filename = file.path(output_dir, "birdnet_non_native_species_detections_through_time.png"),
   plot = non_native_plot,
   width = 14,
   height = 8,
-  dpi = 150
+  dpi = 300
 )
 save_plot_quiet(
   filename = file.path(output_dir, "birdnet_diel_activity_by_species.png"),
   plot = diel_activity_heatmap_plot,
   width = 13,
   height = 9,
-  dpi = 150
+  dpi = 300
 )
 save_plot_quiet(
   filename = file.path(output_dir, "birdnet_day_night_calling_bias_by_species.png"),
   plot = diel_preference_plot,
   width = 13,
   height = 9,
-  dpi = 150
+  dpi = 300
 )
 save_plot_quiet(
   filename = file.path(output_dir, "birdnet_top_10_species_detections_through_time_by_recorder.png"),
   plot = top_species_by_recorder_plot,
   width = 15,
   height = max(8, 3 * length(recorder_ids)),
-  dpi = 150
+  dpi = 300
 )
 save_plot_quiet(
   filename = file.path(output_dir, "birdnet_cumulative_new_species_by_recorder.png"),
   plot = cumulative_species_by_recorder_plot,
   width = 14,
   height = max(7, 3 * length(recorder_ids)),
-  dpi = 150
+  dpi = 300
 )
 save_plot_quiet(
   filename = file.path(output_dir, "birdnet_periodicity.png"),
   plot = periodicity_plot,
   width = 15,
   height = 11,
-  dpi = 150
+  dpi = 300
 )
 
 for (recorder_id in recorder_ids) {
@@ -7948,17 +7948,17 @@ for (recorder_id in recorder_ids) {
     print_plot_quiet(recorder_periodicity_plot)
   }
 
-  save_plot_quiet(file.path(recorder_dir, "birdnet_identifications_over_time.png"), recorder_time_series_plot, width = 12, height = 7, dpi = 150)
-  save_plot_quiet(file.path(recorder_dir, "birdnet_identifications_over_time_linear.png"), recorder_time_series_plot_linear, width = 12, height = 7, dpi = 150)
-  save_plot_quiet(file.path(recorder_dir, "birdnet_cumulative_new_species.png"), recorder_cumulative_plot, width = 12, height = 7, dpi = 150)
-  save_plot_quiet(file.path(recorder_dir, "birdnet_identifications_by_species.png"), recorder_species_plot, width = 13, height = 10, dpi = 150)
-  save_plot_quiet(file.path(recorder_dir, "birdnet_identifications_by_species_by_month.png"), recorder_species_by_month_plot, width = 16, height = 12, dpi = 150)
-  save_plot_quiet(file.path(recorder_dir, "birdnet_species_composition_by_diversity_window.png"), recorder_species_composition_plot, width = 15, height = 8, dpi = 150)
-  save_plot_quiet(file.path(recorder_dir, "birdnet_monthly_diversity_metrics.png"), recorder_diversity_plot, width = 14, height = 10, dpi = 150)
-  save_plot_quiet(file.path(recorder_dir, "birdnet_monthly_diversity_metrics_daily_incidence.png"), recorder_daily_incidence_diversity_plot, width = 14, height = 10, dpi = 150)
-  save_plot_quiet(file.path(recorder_dir, "birdnet_top_10_species_detections_through_time.png"), recorder_top_species_plot, width = 14, height = 8, dpi = 150)
-  save_plot_quiet(file.path(recorder_dir, "birdnet_non_native_species_detections_through_time.png"), recorder_non_native_plot, width = 14, height = 8, dpi = 150)
-  save_plot_quiet(file.path(recorder_dir, "birdnet_periodicity.png"), recorder_periodicity_plot, width = 15, height = 11, dpi = 150)
+  save_plot_quiet(file.path(recorder_dir, "birdnet_identifications_over_time.png"), recorder_time_series_plot, width = 12, height = 7, dpi = 300)
+  save_plot_quiet(file.path(recorder_dir, "birdnet_identifications_over_time_linear.png"), recorder_time_series_plot_linear, width = 12, height = 7, dpi = 300)
+  save_plot_quiet(file.path(recorder_dir, "birdnet_cumulative_new_species.png"), recorder_cumulative_plot, width = 12, height = 7, dpi = 300)
+  save_plot_quiet(file.path(recorder_dir, "birdnet_identifications_by_species.png"), recorder_species_plot, width = 13, height = 10, dpi = 300)
+  save_plot_quiet(file.path(recorder_dir, "birdnet_identifications_by_species_by_month.png"), recorder_species_by_month_plot, width = 16, height = 12, dpi = 300)
+  save_plot_quiet(file.path(recorder_dir, "birdnet_species_composition_by_diversity_window.png"), recorder_species_composition_plot, width = 15, height = 8, dpi = 300)
+  save_plot_quiet(file.path(recorder_dir, "birdnet_monthly_diversity_metrics.png"), recorder_diversity_plot, width = 14, height = 10, dpi = 300)
+  save_plot_quiet(file.path(recorder_dir, "birdnet_monthly_diversity_metrics_daily_incidence.png"), recorder_daily_incidence_diversity_plot, width = 14, height = 10, dpi = 300)
+  save_plot_quiet(file.path(recorder_dir, "birdnet_top_10_species_detections_through_time.png"), recorder_top_species_plot, width = 14, height = 8, dpi = 300)
+  save_plot_quiet(file.path(recorder_dir, "birdnet_non_native_species_detections_through_time.png"), recorder_non_native_plot, width = 14, height = 8, dpi = 300)
+  save_plot_quiet(file.path(recorder_dir, "birdnet_periodicity.png"), recorder_periodicity_plot, width = 15, height = 11, dpi = 300)
 }
 
 message(sprintf("Analysis complete. Outputs written to: %s", output_dir))
