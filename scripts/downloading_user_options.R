@@ -1,7 +1,8 @@
 # user-defined download settings --------------------------------------------
-source_mode <- "ecosounds"  # "archive" or "ecosounds"
+source_mode <- "archive"  # "archive" or "ecosounds"
 
 archive_file <- "/Volumes/brad0317/Documents/acoustic/GEL_D/GEL_D19082025_25102025.tar.zst"
+#archive_file <- "/Volumes/CSE-GlobalEcology/bradshaw/acoustic/GEL_E/GEL_E20250924_20251130.tar.zst"
 
 ecosounds_workbench_url <- "https://api.ecosounds.org"
 ecosounds_project_id <- 1281L
