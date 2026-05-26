@@ -1432,6 +1432,8 @@ build_existing_summary_index <- function(out_root) {
   if (length(summary_csv_files) == 0) {
     return(data.frame(
       recording_key = character(),
+      recorder_label = character(),
+      recording_clock_key = character(),
       summary_csv = character(),
       predictions_csv = character(),
       stringsAsFactors = FALSE
@@ -1449,6 +1451,8 @@ build_existing_summary_index <- function(out_root) {
       ))
       data.frame(
         recording_key = recording_keys,
+        recorder_label = extract_recorder_label_from_path(summary_csv, fallback = ""),
+        recording_clock_key = extract_recording_clock_key(summary_csv, fallback = ""),
         summary_csv = summary_csv,
         predictions_csv = predictions_csv,
         stringsAsFactors = FALSE
@@ -1482,13 +1486,28 @@ find_existing_output_paths <- function(archive_member, output_paths, summary_ind
   matching_rows <- summary_index[summary_index$recording_key %in% candidate_keys, , drop = FALSE]
 
   if (nrow(matching_rows) > 0 && nzchar(incoming_recorder_label)) {
-    matching_recorder_labels <- vapply(
-      matching_rows$summary_csv,
-      extract_recorder_label_from_path,
-      character(1),
-      fallback = ""
-    )
-    matching_rows <- matching_rows[matching_recorder_labels == incoming_recorder_label, , drop = FALSE]
+    matching_rows <- matching_rows[matching_rows$recorder_label == incoming_recorder_label, , drop = FALSE]
+  }
+
+  if (nrow(matching_rows) == 0 && nzchar(incoming_recorder_label)) {
+    incoming_clock_key <- extract_recording_clock_key(archive_member, fallback = "")
+
+    if (nzchar(incoming_clock_key)) {
+      matching_rows <- summary_index[
+        summary_index$recorder_label == incoming_recorder_label &
+          summary_index$recording_clock_key == incoming_clock_key,
+        ,
+        drop = FALSE
+      ]
+
+      if (nrow(matching_rows) > 0) {
+        matching_rows <- matching_rows[!duplicated(matching_rows$summary_csv), , drop = FALSE]
+
+        if (nrow(matching_rows) > 1) {
+          return(NULL)
+        }
+      }
+    }
   }
 
   if (nrow(matching_rows) == 0) {
@@ -1522,6 +1541,8 @@ add_summary_to_index <- function(summary_index, archive_member, output_paths) {
     summary_index,
     data.frame(
       recording_key = new_keys,
+      recorder_label = rep(extract_recorder_label_from_path(output_paths$summary_csv, fallback = ""), length(new_keys)),
+      recording_clock_key = rep(extract_recording_clock_key(output_paths$summary_csv, fallback = ""), length(new_keys)),
       summary_csv = rep(output_paths$summary_csv, length(new_keys)),
       predictions_csv = rep(output_paths$predictions_csv, length(new_keys)),
       stringsAsFactors = FALSE

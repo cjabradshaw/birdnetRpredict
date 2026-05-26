@@ -687,6 +687,7 @@ skipped_existing
 
 This allows rerunning the script after interruption without reprocessing every file, regardless of whether the source is a local archive or EcoSounds.
 When switching between archive mode and EcoSounds mode, skip detection now scans the actual processed BirdNET CSV outputs already present under `out/` and matches recordings using origin-agnostic filename keys derived from those existing outputs, so recordings already processed from one source are skipped when encountered later from the other source even if the incoming archive/header path differs.
+If an older output pair was written with the same recorder and wall-clock timestamp but a different Adelaide UTC offset in the filename stem, the skip logic now falls back to that recorder-specific local clock time before downloading the file again.
 If `out/amalgamated_birdnet_output/` has been created with the optional clean-up script, those amalgamated recorder-level CSV pairs are preferred by the skip index when matching future archive or EcoSounds inputs.
 In EcoSounds mode, the stable recording-ID path is still used for the local EcoSounds output tree itself, so already processed recordings are also skipped on rerun before any fresh download is attempted.
 

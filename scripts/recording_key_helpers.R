@@ -31,6 +31,28 @@ extract_recorder_label_from_path <- function(path_text, fallback = "unknown") {
   fallback
 }
 
+extract_recording_timestamp_text <- function(path_text, fallback = "") {
+  path_text <- normalizePath(as.character(path_text), winslash = "/", mustWork = FALSE)
+  candidate <- basename(as.character(path_text))
+  timestamp_text <- regmatches(candidate, regexpr("[0-9]{8}T[0-9]{6}[+-][0-9]{4}", candidate))
+
+  if (length(timestamp_text) == 1 && !is.na(timestamp_text) && nzchar(timestamp_text)) {
+    return(timestamp_text)
+  }
+
+  fallback
+}
+
+extract_recording_clock_key <- function(path_text, fallback = "") {
+  timestamp_text <- extract_recording_timestamp_text(path_text, fallback = "")
+
+  if (!nzchar(timestamp_text)) {
+    return(fallback)
+  }
+
+  sub("[+-][0-9]{4}$", "", timestamp_text)
+}
+
 canonical_recording_key <- function(path_text) {
   path_text <- normalizePath(as.character(path_text), winslash = "/", mustWork = FALSE)
   candidate <- basename(as.character(path_text))
@@ -40,9 +62,7 @@ canonical_recording_key <- function(path_text) {
   candidate <- sub("^recording_[0-9]+_", "", candidate)
 
   recorder_label <- extract_recorder_label_from_path(path_text, fallback = "")
-
-  timestamp_text <- regmatches(candidate, regexpr("[0-9]{8}T[0-9]{6}[+-][0-9]{4}", candidate))
-  timestamp_text <- if (length(timestamp_text) == 1 && !is.na(timestamp_text) && nzchar(timestamp_text)) timestamp_text else ""
+  timestamp_text <- extract_recording_timestamp_text(candidate, fallback = "")
 
   coordinate_parts <- regmatches(
     candidate,
@@ -78,9 +98,7 @@ candidate_recording_keys <- function(path_text) {
   candidate <- sub("^recording_[0-9]+_", "", candidate)
 
   recorder_label <- extract_recorder_label_from_path(path_text, fallback = "")
-
-  timestamp_text <- regmatches(candidate, regexpr("[0-9]{8}T[0-9]{6}[+-][0-9]{4}", candidate))
-  timestamp_text <- if (length(timestamp_text) == 1 && !is.na(timestamp_text) && nzchar(timestamp_text)) timestamp_text else ""
+  timestamp_text <- extract_recording_timestamp_text(candidate, fallback = "")
 
   coordinate_parts <- regmatches(
     candidate,
