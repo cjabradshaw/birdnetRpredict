@@ -640,14 +640,14 @@ BirdNET analysis is also run in a monitored child R process through <code>callr<
 
 The source-processing script is restart-friendly.
 
-If a file's summary CSV already exists, that file is skipped and logged as:
+If a file already has an existing BirdNET output pair in `out/` (`*_birdnet_species_summary.csv` plus the matching `*_birdnet_predictions.csv`), that file is skipped and logged as:
 
 ```text
 skipped_existing
 ```
 
 This allows rerunning the script after interruption without reprocessing every file, regardless of whether the source is a local archive or EcoSounds.
-When switching between archive mode and EcoSounds mode, skip detection now also uses an origin-agnostic recording key derived from the underlying timestamped audio filename, so recordings already processed from one source are skipped when encountered later from the other source.
+When switching between archive mode and EcoSounds mode, skip detection now scans the actual processed BirdNET CSV outputs already present under `out/` and matches recordings using origin-agnostic filename keys derived from those existing outputs, so recordings already processed from one source are skipped when encountered later from the other source even if the incoming archive/header path differs.
 In EcoSounds mode, the stable recording-ID path is still used for the local EcoSounds output tree itself, so already processed recordings are also skipped on rerun before any fresh download is attempted.
 
 ## Contingencies and failure behaviour
@@ -710,7 +710,7 @@ If the process is interrupted, rerun:
 Rscript scripts/process_download_pipeline.R
 ```
 
-Files with existing summary outputs skipped automatically.
+Files with existing BirdNET output CSV pairs skipped automatically.
 
 ## Notes
 

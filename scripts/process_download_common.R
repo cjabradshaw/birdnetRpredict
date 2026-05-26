@@ -215,6 +215,47 @@ canonical_recording_key <- function(path_text) {
   candidate
 }
 
+candidate_recording_keys <- function(path_text) {
+  path_text <- normalizePath(as.character(path_text), winslash = "/", mustWork = FALSE)
+  candidate <- basename(as.character(path_text))
+  candidate <- sub("_birdnet_species_summary\\.csv$", "", candidate)
+  candidate <- sub("_birdnet_predictions\\.csv$", "", candidate)
+  candidate <- sub("\\.(wav|flac|mp3|aif|aiff|ogg|m4a|mp4)$", "", candidate, ignore.case = TRUE)
+  candidate <- sub("^recording_[0-9]+_", "", candidate)
+
+  recorder_candidates <- regmatches(
+    path_text,
+    gregexpr("GEL[-_ ][A-Z]+", path_text, perl = TRUE)
+  )[[1]]
+  recorder_candidates <- recorder_candidates[!is.na(recorder_candidates) & nzchar(recorder_candidates)]
+  recorder_label <- if (length(recorder_candidates) > 0) {
+    normalise_recorder_label(recorder_candidates[[1]])
+  } else {
+    ""
+  }
+
+  timestamp_text <- regmatches(candidate, regexpr("[0-9]{8}T[0-9]{6}[+-][0-9]{4}", candidate))
+  timestamp_text <- if (length(timestamp_text) == 1 && !is.na(timestamp_text) && nzchar(timestamp_text)) timestamp_text else ""
+
+  coordinate_parts <- regmatches(
+    candidate,
+    regexec("(-?[0-9]{1,2}\\.[0-9]+)([+-][0-9]{1,3}\\.[0-9]+)", candidate, perl = TRUE)
+  )[[1]]
+  coordinate_key <- if (length(coordinate_parts) == 3) {
+    paste0(coordinate_parts[[2]], coordinate_parts[[3]])
+  } else {
+    ""
+  }
+
+  key_candidates <- c(
+    if (nzchar(timestamp_text) && nzchar(recorder_label)) sprintf("%s/%s", recorder_label, timestamp_text) else "",
+    if (nzchar(timestamp_text) && nzchar(coordinate_key)) sprintf("%s/%s", timestamp_text, coordinate_key) else "",
+    if (nzchar(timestamp_text)) timestamp_text else "",
+    if (nzchar(candidate)) candidate else ""
+  )
+  unique(key_candidates[nzchar(key_candidates)])
+}
+
 ecosounds_archive_member <- function(recording) {
   canonical_name <- basename(as.character(recording[["canonical_file_name"]]))
   recorder_label <- normalise_recorder_label(
@@ -1484,6 +1525,14 @@ build_existing_summary_index <- function(out_root) {
   )
   summary_csv_files <- summary_csv_files[!grepl("/analysis/", summary_csv_files)]
   summary_csv_files <- summary_csv_files[file.exists(summary_csv_files)]
+  predictions_csv_files <- sub(
+    "_birdnet_species_summary\\.csv$",
+    "_birdnet_predictions.csv",
+    summary_csv_files
+  )
+  paired_rows <- file.exists(predictions_csv_files)
+  summary_csv_files <- summary_csv_files[paired_rows]
+  predictions_csv_files <- predictions_csv_files[paired_rows]
 
   if (length(summary_csv_files) == 0) {
     return(data.frame(
@@ -1494,27 +1543,38 @@ build_existing_summary_index <- function(out_root) {
     ))
   }
 
-  summary_index <- data.frame(
-    recording_key = vapply(summary_csv_files, canonical_recording_key, character(1)),
-    summary_csv = summary_csv_files,
-    predictions_csv = sub(
-      "_birdnet_species_summary\\.csv$",
-      "_birdnet_predictions.csv",
-      summary_csv_files
-    ),
-    stringsAsFactors = FALSE
+  summary_index <- do.call(
+    rbind,
+    lapply(seq_along(summary_csv_files), function(index) {
+      summary_csv <- summary_csv_files[[index]]
+      predictions_csv <- predictions_csv_files[[index]]
+      recording_keys <- unique(c(
+        candidate_recording_keys(summary_csv),
+        candidate_recording_keys(predictions_csv)
+      ))
+      data.frame(
+        recording_key = recording_keys,
+        summary_csv = summary_csv,
+        predictions_csv = predictions_csv,
+        stringsAsFactors = FALSE
+      )
+    })
   )
   summary_index <- summary_index[!duplicated(summary_index$recording_key), , drop = FALSE]
   summary_index
 }
 
 find_existing_output_paths <- function(archive_member, output_paths, summary_index) {
-  if (file.exists(output_paths$summary_csv)) {
+  if (file.exists(output_paths$summary_csv) && file.exists(output_paths$predictions_csv)) {
     return(output_paths)
   }
 
-  recording_key <- canonical_recording_key(archive_member)
-  matching_rows <- summary_index[summary_index$recording_key == recording_key, , drop = FALSE]
+  candidate_keys <- unique(c(
+    candidate_recording_keys(archive_member),
+    candidate_recording_keys(output_paths$summary_csv),
+    candidate_recording_keys(output_paths$predictions_csv)
+  ))
+  matching_rows <- summary_index[summary_index$recording_key %in% candidate_keys, , drop = FALSE]
 
   if (nrow(matching_rows) == 0) {
     return(NULL)
@@ -1527,22 +1587,28 @@ find_existing_output_paths <- function(archive_member, output_paths, summary_ind
 }
 
 add_summary_to_index <- function(summary_index, archive_member, output_paths) {
-  if (is.null(output_paths$summary_csv) || !file.exists(output_paths$summary_csv)) {
+  if (is.null(output_paths$summary_csv) || !file.exists(output_paths$summary_csv) ||
+      is.null(output_paths$predictions_csv) || !file.exists(output_paths$predictions_csv)) {
     return(summary_index)
   }
 
-  recording_key <- canonical_recording_key(archive_member)
+  recording_keys <- unique(c(
+    candidate_recording_keys(archive_member),
+    candidate_recording_keys(output_paths$summary_csv),
+    candidate_recording_keys(output_paths$predictions_csv)
+  ))
+  new_keys <- setdiff(recording_keys, summary_index$recording_key)
 
-  if (recording_key %in% summary_index$recording_key) {
+  if (length(new_keys) == 0) {
     return(summary_index)
   }
 
   rbind(
     summary_index,
     data.frame(
-      recording_key = recording_key,
-      summary_csv = output_paths$summary_csv,
-      predictions_csv = output_paths$predictions_csv,
+      recording_key = new_keys,
+      summary_csv = rep(output_paths$summary_csv, length(new_keys)),
+      predictions_csv = rep(output_paths$predictions_csv, length(new_keys)),
       stringsAsFactors = FALSE
     )
   )
