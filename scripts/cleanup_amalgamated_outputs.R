@@ -236,7 +236,7 @@ safe_output_stem_component <- function(text_value) {
   text_value
 }
 
-build_amalgamation_manifest <- function(source_pairs) {
+build_amalgamation_manifest <- function(source_pairs, existing_manifest = NULL) {
   manifest <- data.frame(
     recorder_id = character(),
     recording_key = character(),
@@ -255,49 +255,79 @@ build_amalgamation_manifest <- function(source_pairs) {
     return(manifest)
   }
 
+  if (is.null(existing_manifest)) {
+    existing_manifest <- manifest
+  }
+
+  if (nrow(existing_manifest) > 0) {
+    existing_manifest <- existing_manifest[order(existing_manifest$recording_key), , drop = FALSE]
+    existing_manifest <- existing_manifest[!duplicated(existing_manifest$recording_key), , drop = FALSE]
+  }
+
   amalgamated_root <- unique(source_pairs$amalgamated_root)
   if (length(amalgamated_root) != 1) {
     stop("source_pairs must contain exactly one amalgamated_root value")
   }
 
   used_stems <- new.env(parent = emptyenv())
+  if (nrow(existing_manifest) > 0) {
+    for (index in seq_len(nrow(existing_manifest))) {
+      existing_row <- existing_manifest[index, , drop = FALSE]
+      existing_stem <- sub(
+        "_birdnet_species_summary\\.csv$",
+        "",
+        basename(existing_row$amalgamated_summary_csv[[1]])
+      )
+      assign(
+        sprintf("%s::%s", existing_row$recorder_id[[1]], existing_stem),
+        existing_row$recording_key[[1]],
+        envir = used_stems
+      )
+    }
+  }
 
   for (index in seq_len(nrow(source_pairs))) {
     row <- source_pairs[index, , drop = FALSE]
-    recorder_dir <- file.path(amalgamated_root, row$recorder_id[[1]])
-    dir.create(recorder_dir, recursive = TRUE, showWarnings = FALSE)
+    existing_index <- match(row$recording_key[[1]], existing_manifest$recording_key)
+    if (!is.na(existing_index)) {
+      summary_dest <- existing_manifest$amalgamated_summary_csv[[existing_index]]
+      predictions_dest <- existing_manifest$amalgamated_predictions_csv[[existing_index]]
+    } else {
+      recorder_dir <- file.path(amalgamated_root, row$recorder_id[[1]])
+      dir.create(recorder_dir, recursive = TRUE, showWarnings = FALSE)
 
-    source_stem <- sub("_birdnet_species_summary\\.csv$", "", basename(row$summary_csv[[1]]))
-    stem_key <- sprintf("%s::%s", row$recorder_id[[1]], source_stem)
-    dest_stem <- source_stem
+      source_stem <- sub("_birdnet_species_summary\\.csv$", "", basename(row$summary_csv[[1]]))
+      stem_key <- sprintf("%s::%s", row$recorder_id[[1]], source_stem)
+      dest_stem <- source_stem
 
-    if (exists(stem_key, envir = used_stems, inherits = FALSE)) {
-      previous_key <- get(stem_key, envir = used_stems, inherits = FALSE)
-      if (!identical(previous_key, row$recording_key[[1]])) {
-        dest_stem <- paste0(
-          source_stem,
-          "__",
-          safe_output_stem_component(gsub("/", "_", row$recording_key[[1]], fixed = TRUE))
-        )
+      if (exists(stem_key, envir = used_stems, inherits = FALSE)) {
+        previous_key <- get(stem_key, envir = used_stems, inherits = FALSE)
+        if (!identical(previous_key, row$recording_key[[1]])) {
+          dest_stem <- paste0(
+            source_stem,
+            "__",
+            safe_output_stem_component(gsub("/", "_", row$recording_key[[1]], fixed = TRUE))
+          )
+        }
       }
-    }
 
-    unique_stem <- dest_stem
-    suffix <- 2L
-    repeat {
-      summary_dest <- file.path(recorder_dir, paste0(unique_stem, "_birdnet_species_summary.csv"))
-      predictions_dest <- file.path(recorder_dir, paste0(unique_stem, "_birdnet_predictions.csv"))
-      if (!file.exists(summary_dest) && !file.exists(predictions_dest)) {
-        break
+      unique_stem <- dest_stem
+      suffix <- 2L
+      repeat {
+        summary_dest <- file.path(recorder_dir, paste0(unique_stem, "_birdnet_species_summary.csv"))
+        predictions_dest <- file.path(recorder_dir, paste0(unique_stem, "_birdnet_predictions.csv"))
+        if (!file.exists(summary_dest) && !file.exists(predictions_dest)) {
+          break
+        }
+        unique_stem <- sprintf("%s__%d", dest_stem, suffix)
+        suffix <- suffix + 1L
       }
-      unique_stem <- sprintf("%s__%d", dest_stem, suffix)
-      suffix <- suffix + 1L
-    }
 
-    file.copy(row$summary_csv[[1]], summary_dest, overwrite = TRUE, copy.mode = TRUE, copy.date = TRUE)
-    file.copy(row$predictions_csv[[1]], predictions_dest, overwrite = TRUE, copy.mode = TRUE, copy.date = TRUE)
-    assign(sprintf("%s::%s", row$recorder_id[[1]], unique_stem), row$recording_key[[1]], envir = used_stems)
-    assign(stem_key, row$recording_key[[1]], envir = used_stems)
+      file.copy(row$summary_csv[[1]], summary_dest, overwrite = TRUE, copy.mode = TRUE, copy.date = TRUE)
+      file.copy(row$predictions_csv[[1]], predictions_dest, overwrite = TRUE, copy.mode = TRUE, copy.date = TRUE)
+      assign(sprintf("%s::%s", row$recorder_id[[1]], unique_stem), row$recording_key[[1]], envir = used_stems)
+      assign(stem_key, row$recording_key[[1]], envir = used_stems)
+    }
 
     manifest <- rbind(
       manifest,
@@ -418,20 +448,24 @@ if (nrow(source_pairs) == 0) {
   quit(save = "no", status = 0)
 }
 
-if (nzchar(cleanup_recorder_filter)) {
-  dir.create(amalgamated_root, recursive = TRUE, showWarnings = FALSE)
-  target_recorder_dir <- file.path(amalgamated_root, cleanup_recorder_filter)
-  if (dir.exists(target_recorder_dir)) {
-    unlink(target_recorder_dir, recursive = TRUE, force = TRUE)
-  }
-} else {
-  if (dir.exists(amalgamated_root)) {
-    unlink(amalgamated_root, recursive = TRUE, force = TRUE)
-  }
+existing_amalgamated_manifest <- build_existing_amalgamated_manifest(amalgamated_root)
+if (nzchar(cleanup_recorder_filter) && nrow(existing_amalgamated_manifest) > 0) {
+  existing_amalgamated_manifest <- existing_amalgamated_manifest[
+    existing_amalgamated_manifest$recorder_id == cleanup_recorder_filter,
+    ,
+    drop = FALSE
+  ]
 }
 dir.create(amalgamated_root, recursive = TRUE, showWarnings = FALSE)
 
-manifest <- build_amalgamation_manifest(source_pairs)
+manifest <- build_amalgamation_manifest(source_pairs, existing_manifest = existing_amalgamated_manifest)
+existing_destinations <- unique(existing_amalgamated_manifest$amalgamated_summary_csv)
+reused_pairs <- if (length(existing_destinations) == 0) {
+  0L
+} else {
+  sum(manifest$amalgamated_summary_csv %in% existing_destinations)
+}
+newly_copied_pairs <- nrow(manifest) - reused_pairs
 if (isTRUE(effective_verify_copies)) {
   manifest <- verify_amalgamated_copies(manifest)
   verification_failures <- sum(manifest$copy_verification_status != "verified")
@@ -459,9 +493,15 @@ final_manifest <- merge_manifest_metadata(
 write.csv(final_manifest, manifest_csv, row.names = FALSE)
 
 if (nzchar(cleanup_recorder_filter)) {
-  emit_console(sprintf("rebuilt amalgamated recorder directory for %s under %s", cleanup_recorder_filter, amalgamated_root))
+  emit_console(sprintf("updated amalgamated recorder directory for %s under %s", cleanup_recorder_filter, amalgamated_root))
 } else {
-  emit_console(sprintf("created amalgamated recorder directories under %s", amalgamated_root))
+  emit_console(sprintf("updated amalgamated recorder directories under %s", amalgamated_root))
 }
-emit_console(sprintf("copied %d unique BirdNET output pairs across %d recorders", nrow(manifest), length(unique(manifest$recorder_id))))
+emit_console(sprintf(
+  "processed %d unique BirdNET output pairs across %d recorders (%d newly copied, %d existing retained)",
+  nrow(manifest),
+  length(unique(manifest$recorder_id)),
+  newly_copied_pairs,
+  reused_pairs
+))
 emit_console(sprintf("amalgamation manifest written to %s", manifest_csv))

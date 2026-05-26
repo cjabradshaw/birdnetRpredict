@@ -95,17 +95,17 @@ The source-processing pipeline is now split across six scripts:
 5. `scripts/cleanup_amalgamated_outputs.R`
    - optional post-processing clean-up step to run after archive/EcoSounds processing has finished
    - scans recorder outputs across both archive-derived and EcoSounds-derived directories already present under `out/`
-   - honours `cleanup_amalgamated_recorder_name` from `scripts/cleanup_user_options.R`, so you can rebuild just one recorder such as `GEL_A` instead of all recorder amalgamations
+   - honours `cleanup_amalgamated_recorder_name` from `scripts/cleanup_user_options.R`, so you can update just one recorder such as `GEL_A` instead of all recorder amalgamations
    - can optionally verify each copied summary/predictions CSV pair against its original source files before completion
    - can optionally delete the original unamalgamated source CSV pairs after successful copy verification
-   - rebuilds `out/amalgamated_birdnet_output/<RECORDER>/` directories containing one deduplicated copy of each `*_birdnet_species_summary.csv` + `*_birdnet_predictions.csv` pair per recorder
+   - incrementally updates `out/amalgamated_birdnet_output/<RECORDER>/` directories so new deduplicated `*_birdnet_species_summary.csv` + `*_birdnet_predictions.csv` pairs are added without removing valid files already present there
 
 6. `scripts/recording_key_helpers.R`
    - shared helper functions for recorder-name normalisation and origin-agnostic recording-key matching used by the downloader, analysis deduplication, and amalgamation clean-up
 
 7. `scripts/cleanup_user_options.R`
    - holds clean-up-only settings separately from the downloading pipeline settings
-   - currently includes the optional recorder filter used by `cleanup_amalgamated_outputs.R`
+   - currently includes the optional recorder filter plus copy-verification and source-deletion settings used by `cleanup_amalgamated_outputs.R`
 
 The shared source-processing logic then:
 
@@ -122,7 +122,7 @@ Archive mode still avoids unpacking the entire archive at once and avoids waitin
 `scripts/analyse_birdnet_output.R`:
 
 1. searches recursively under `out/` for existing `*_birdnet_species_summary.csv` files
-2. ignores `out/analysis/` and `out/amalgamated_birdnet_output/` so copied amalgamated summaries are not double-counted
+2. ignores `out/analysis/` and, when the same recording exists in multiple places, prefers `out/amalgamated_birdnet_output/` over the original recorder/source directories
 3. combines the summary CSVs that are already present and readable
 4. filters detections by a user-defined minimum confidence threshold
 5. bins detections into a user-defined time step (default `60` minutes)

@@ -5164,15 +5164,23 @@ summary_csv_files <- list.files(
   full.names = TRUE
 )
 summary_csv_files <- summary_csv_files[!grepl("/analysis/", summary_csv_files)]
-summary_csv_files <- summary_csv_files[!grepl("/amalgamated_birdnet_output/", summary_csv_files, fixed = TRUE)]
 if (length(summary_csv_files) > 1) {
   summary_file_index <- data.frame(
     summary_csv = summary_csv_files,
     recording_key = vapply(summary_csv_files, canonical_recording_key, character(1)),
+    is_amalgamated = grepl("/amalgamated_birdnet_output/", summary_csv_files, fixed = TRUE),
     modified_time = as.numeric(file.info(summary_csv_files)$mtime),
     stringsAsFactors = FALSE
   )
-  summary_file_index <- summary_file_index[order(summary_file_index$recording_key, -summary_file_index$modified_time), , drop = FALSE]
+  summary_file_index <- summary_file_index[
+    order(
+      summary_file_index$recording_key,
+      -as.integer(summary_file_index$is_amalgamated),
+      -summary_file_index$modified_time
+    ),
+    ,
+    drop = FALSE
+  ]
   summary_file_index <- summary_file_index[!duplicated(summary_file_index$recording_key), , drop = FALSE]
   summary_csv_files <- summary_file_index$summary_csv
 }
