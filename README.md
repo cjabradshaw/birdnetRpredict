@@ -30,11 +30,14 @@ birdnetRpredict/
 │   ├── analyse_birdnet_output.R
 │   ├── birdnet_helpers.R
 │   ├── birdnetID.R
+│   ├── cleanup_amalgamated_outputs.R
+│   ├── cleanup_user_options.R
 │   ├── downloading_user_options.R
 │   ├── process_download_common.R
 │   ├── process_download_pipeline.R
 │   ├── process_ecosounds.R
-│   └── process_tar_archive.R
+│   ├── process_tar_archive.R
+│   └── recording_key_helpers.R
 └── www
 ```
 
@@ -57,7 +60,7 @@ birdnetRpredict/
 
 ### Source-processing workflow
 
-The source-processing pipeline is now split across four scripts:
+The source-processing pipeline is now split across six scripts:
 
 1. `scripts/downloading_user_options.R`
    - holds the user-editable download settings in one place
@@ -89,12 +92,28 @@ The source-processing pipeline is now split across four scripts:
    - processes `.wav` recordings directly and converts other source formats to `.wav` when needed
    - deletes the downloaded local audio immediately after that one file is analysed, before downloading the next file
 
+5. `scripts/cleanup_amalgamated_outputs.R`
+   - optional post-processing clean-up step to run after archive/EcoSounds processing has finished
+   - scans recorder outputs across both archive-derived and EcoSounds-derived directories already present under `out/`
+   - honours `cleanup_amalgamated_recorder_name` from `scripts/cleanup_user_options.R`, so you can rebuild just one recorder such as `GEL_A` instead of all recorder amalgamations
+   - can optionally verify each copied summary/predictions CSV pair against its original source files before completion
+   - can optionally delete the original unamalgamated source CSV pairs after successful copy verification
+   - rebuilds `out/amalgamated_birdnet_output/<RECORDER>/` directories containing one deduplicated copy of each `*_birdnet_species_summary.csv` + `*_birdnet_predictions.csv` pair per recorder
+
+6. `scripts/recording_key_helpers.R`
+   - shared helper functions for recorder-name normalisation and origin-agnostic recording-key matching used by the downloader, analysis deduplication, and amalgamation clean-up
+
+7. `scripts/cleanup_user_options.R`
+   - holds clean-up-only settings separately from the downloading pipeline settings
+   - currently includes the optional recorder filter used by `cleanup_amalgamated_outputs.R`
+
 The shared source-processing logic then:
 
 1. runs the same BirdNET summary workflow used by the single-file script
 2. writes per-file CSV outputs
 3. deletes temporary downloaded/extracted audio files
 4. moves to the next source item until the run is complete
+5. can optionally be followed by `Rscript scripts/cleanup_amalgamated_outputs.R` to assemble recorder-level amalgamated output directories for later resume checks
 
 Archive mode still avoids unpacking the entire archive at once and avoids waiting for a full member enumeration before processing starts. macOS sidecar entries such as `._*.flac` and `__MACOSX/` metadata are skipped during archive streaming.
 
@@ -103,10 +122,11 @@ Archive mode still avoids unpacking the entire archive at once and avoids waitin
 `scripts/analyse_birdnet_output.R`:
 
 1. searches recursively under `out/` for existing `*_birdnet_species_summary.csv` files
-2. combines the summary CSVs that are already present and readable
-3. filters detections by a user-defined minimum confidence threshold
-4. bins detections into a user-defined time step (default `60` minutes)
-5. writes aggregate CSV tables plus plots for:
+2. ignores `out/analysis/` and `out/amalgamated_birdnet_output/` so copied amalgamated summaries are not double-counted
+3. combines the summary CSVs that are already present and readable
+4. filters detections by a user-defined minimum confidence threshold
+5. bins detections into a user-defined time step (default `60` minutes)
+6. writes aggregate CSV tables plus plots for:
     - identifications over time
     - cumulative new species over time
     - identifications per species
@@ -214,6 +234,25 @@ To process only one EcoSounds recorder at a time, set one of these near the top 
 - `ecosounds_recorder_name <- "GEL_A"` for an exact recorder/site name match when you know the API site name matches that label
 
 The EcoSounds listing request itself is restricted to that recorder/site before files are queued for download. Leave both empty if you want the whole project. Do not set both at once.
+
+### `scripts/cleanup_user_options.R`
+
+Edit:
+
+- `cleanup_amalgamated_recorder_name`
+- `cleanup_verify_copied_files`
+- `cleanup_delete_original_source_files`
+
+For `scripts/cleanup_amalgamated_outputs.R`, you can optionally restrict the clean-up pass to one recorder by setting, for example:
+
+- `cleanup_amalgamated_recorder_name <- "GEL_A"` to rebuild only the `GEL_A` amalgamated directory
+
+Leave `cleanup_amalgamated_recorder_name <- ""` to rebuild all recorder amalgamations.
+
+Additional clean-up controls:
+
+- `cleanup_verify_copied_files <- TRUE` to cross-check that each copied amalgamated summary/predictions CSV pair matches its original source files
+- `cleanup_delete_original_source_files <- FALSE` to retain the original unamalgamated source CSV pairs by default; set to `TRUE` only if you want those originals deleted after successful copy verification
 
 The default EcoSounds settings now also include:
 
@@ -648,6 +687,7 @@ skipped_existing
 
 This allows rerunning the script after interruption without reprocessing every file, regardless of whether the source is a local archive or EcoSounds.
 When switching between archive mode and EcoSounds mode, skip detection now scans the actual processed BirdNET CSV outputs already present under `out/` and matches recordings using origin-agnostic filename keys derived from those existing outputs, so recordings already processed from one source are skipped when encountered later from the other source even if the incoming archive/header path differs.
+If `out/amalgamated_birdnet_output/` has been created with the optional clean-up script, those amalgamated recorder-level CSV pairs are preferred by the skip index when matching future archive or EcoSounds inputs.
 In EcoSounds mode, the stable recording-ID path is still used for the local EcoSounds output tree itself, so already processed recordings are also skipped on rerun before any fresh download is attempted.
 
 ## Contingencies and failure behaviour

@@ -24,6 +24,7 @@ if (!exists("script_dir", inherits = FALSE)) {
 }
 
 source(file.path(script_dir, "birdnet_helpers.R"))
+source(file.path(script_dir, "recording_key_helpers.R"), local = environment())
 
 required_option_names <- c(
   "source_mode",
@@ -148,112 +149,6 @@ safe_file_component <- function(text_value) {
   }
 
   text_value
-}
-
-normalise_recorder_label <- function(label_text, fallback = "unknown") {
-  candidate <- trimws(as.character(label_text[[1]]))
-
-  if (!nzchar(candidate) || is.na(candidate)) {
-    return(fallback)
-  }
-
-  candidate <- toupper(candidate)
-  candidate <- gsub("[-[:space:]]+", "_", candidate)
-  candidate <- gsub("[^A-Z0-9_]", "", candidate)
-
-  if (!nzchar(candidate)) {
-    fallback
-  } else {
-    candidate
-  }
-}
-
-canonical_recording_key <- function(path_text) {
-  path_text <- normalizePath(as.character(path_text), winslash = "/", mustWork = FALSE)
-  candidate <- basename(as.character(path_text))
-  candidate <- sub("_birdnet_species_summary\\.csv$", "", candidate)
-  candidate <- sub("_birdnet_predictions\\.csv$", "", candidate)
-  candidate <- sub("\\.(wav|flac|mp3|aif|aiff|ogg|m4a|mp4)$", "", candidate, ignore.case = TRUE)
-  candidate <- sub("^recording_[0-9]+_", "", candidate)
-
-  recorder_candidates <- regmatches(
-    path_text,
-    gregexpr("GEL[-_ ][A-Z]+", path_text, perl = TRUE)
-  )[[1]]
-  recorder_candidates <- recorder_candidates[!is.na(recorder_candidates) & nzchar(recorder_candidates)]
-  recorder_label <- if (length(recorder_candidates) > 0) {
-    normalise_recorder_label(recorder_candidates[[1]])
-  } else {
-    ""
-  }
-
-  timestamp_text <- regmatches(candidate, regexpr("[0-9]{8}T[0-9]{6}[+-][0-9]{4}", candidate))
-  timestamp_text <- if (length(timestamp_text) == 1 && !is.na(timestamp_text) && nzchar(timestamp_text)) timestamp_text else ""
-
-  coordinate_parts <- regmatches(
-    candidate,
-    regexec("(-?[0-9]{1,2}\\.[0-9]+)([+-][0-9]{1,3}\\.[0-9]+)", candidate, perl = TRUE)
-  )[[1]]
-  coordinate_key <- if (length(coordinate_parts) == 3) {
-    paste0(coordinate_parts[[2]], coordinate_parts[[3]])
-  } else {
-    ""
-  }
-
-  if (nzchar(timestamp_text) && nzchar(recorder_label)) {
-    return(sprintf("%s/%s", recorder_label, timestamp_text))
-  }
-
-  if (nzchar(timestamp_text) && nzchar(coordinate_key)) {
-    return(sprintf("%s/%s", timestamp_text, coordinate_key))
-  }
-
-  if (nzchar(timestamp_text)) {
-    return(timestamp_text)
-  }
-
-  candidate
-}
-
-candidate_recording_keys <- function(path_text) {
-  path_text <- normalizePath(as.character(path_text), winslash = "/", mustWork = FALSE)
-  candidate <- basename(as.character(path_text))
-  candidate <- sub("_birdnet_species_summary\\.csv$", "", candidate)
-  candidate <- sub("_birdnet_predictions\\.csv$", "", candidate)
-  candidate <- sub("\\.(wav|flac|mp3|aif|aiff|ogg|m4a|mp4)$", "", candidate, ignore.case = TRUE)
-  candidate <- sub("^recording_[0-9]+_", "", candidate)
-
-  recorder_candidates <- regmatches(
-    path_text,
-    gregexpr("GEL[-_ ][A-Z]+", path_text, perl = TRUE)
-  )[[1]]
-  recorder_candidates <- recorder_candidates[!is.na(recorder_candidates) & nzchar(recorder_candidates)]
-  recorder_label <- if (length(recorder_candidates) > 0) {
-    normalise_recorder_label(recorder_candidates[[1]])
-  } else {
-    ""
-  }
-
-  timestamp_text <- regmatches(candidate, regexpr("[0-9]{8}T[0-9]{6}[+-][0-9]{4}", candidate))
-  timestamp_text <- if (length(timestamp_text) == 1 && !is.na(timestamp_text) && nzchar(timestamp_text)) timestamp_text else ""
-
-  coordinate_parts <- regmatches(
-    candidate,
-    regexec("(-?[0-9]{1,2}\\.[0-9]+)([+-][0-9]{1,3}\\.[0-9]+)", candidate, perl = TRUE)
-  )[[1]]
-  coordinate_key <- if (length(coordinate_parts) == 3) {
-    paste0(coordinate_parts[[2]], coordinate_parts[[3]])
-  } else {
-    ""
-  }
-
-  key_candidates <- c(
-    if (nzchar(timestamp_text) && nzchar(recorder_label)) sprintf("%s/%s", recorder_label, timestamp_text) else "",
-    if (nzchar(timestamp_text) && nzchar(coordinate_key)) sprintf("%s/%s", timestamp_text, coordinate_key) else "",
-    if (nzchar(timestamp_text)) timestamp_text else "",
-    if (nzchar(candidate)) candidate else ""
-  )
-  unique(key_candidates[nzchar(key_candidates)])
 }
 
 ecosounds_archive_member <- function(recording) {
@@ -1560,7 +1455,16 @@ build_existing_summary_index <- function(out_root) {
       )
     })
   )
+  summary_index$is_amalgamated <- grepl("/amalgamated_birdnet_output/", summary_index$summary_csv, fixed = TRUE)
+  summary_index$modified_time <- as.numeric(file.info(summary_index$summary_csv)$mtime)
+  summary_index <- summary_index[
+    order(summary_index$recording_key, -as.integer(summary_index$is_amalgamated), -summary_index$modified_time),
+    ,
+    drop = FALSE
+  ]
   summary_index <- summary_index[!duplicated(summary_index$recording_key), , drop = FALSE]
+  summary_index$is_amalgamated <- NULL
+  summary_index$modified_time <- NULL
   summary_index
 }
 
@@ -1569,12 +1473,23 @@ find_existing_output_paths <- function(archive_member, output_paths, summary_ind
     return(output_paths)
   }
 
+  incoming_recorder_label <- extract_recorder_label_from_path(archive_member, fallback = "")
   candidate_keys <- unique(c(
     candidate_recording_keys(archive_member),
     candidate_recording_keys(output_paths$summary_csv),
     candidate_recording_keys(output_paths$predictions_csv)
   ))
   matching_rows <- summary_index[summary_index$recording_key %in% candidate_keys, , drop = FALSE]
+
+  if (nrow(matching_rows) > 0 && nzchar(incoming_recorder_label)) {
+    matching_recorder_labels <- vapply(
+      matching_rows$summary_csv,
+      extract_recorder_label_from_path,
+      character(1),
+      fallback = ""
+    )
+    matching_rows <- matching_rows[matching_recorder_labels == incoming_recorder_label, , drop = FALSE]
+  }
 
   if (nrow(matching_rows) == 0) {
     return(NULL)
