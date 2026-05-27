@@ -99,6 +99,7 @@ The source-processing pipeline is now split across six scripts:
    - can optionally verify each copied summary/predictions CSV pair against its original source files before completion
    - can optionally delete the original unamalgamated source CSV pairs after successful copy verification
    - incrementally updates `out/amalgamated_birdnet_output/<RECORDER>/` directories so new deduplicated `*_birdnet_species_summary.csv` + `*_birdnet_predictions.csv` pairs are added without removing valid files already present there
+   - collapses byte-identical duplicate source pairs that appear in multiple roots (for example, both archive-derived and EcoSounds-derived output trees), but stops with an explicit error if the same recorder/timestamp key appears more than once with different file contents
 
 6. `scripts/recording_key_helpers.R`
    - shared helper functions for recorder-name normalisation and origin-agnostic recording-key matching used by the downloader, analysis deduplication, and amalgamation clean-up

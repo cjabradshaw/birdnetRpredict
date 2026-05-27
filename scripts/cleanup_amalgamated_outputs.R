@@ -236,6 +236,83 @@ safe_output_stem_component <- function(text_value) {
   text_value
 }
 
+collapse_duplicate_source_pairs <- function(source_pairs) {
+  duplicate_info <- list(
+    duplicate_keys = 0L,
+    duplicate_rows_collapsed = 0L
+  )
+
+  if (nrow(source_pairs) == 0) {
+    return(list(source_pairs = source_pairs, duplicate_info = duplicate_info))
+  }
+
+  key_counts <- table(source_pairs$recording_key)
+  duplicate_keys <- names(key_counts[key_counts > 1L])
+  duplicate_info$duplicate_keys <- length(duplicate_keys)
+
+  if (length(duplicate_keys) == 0) {
+    return(list(source_pairs = source_pairs, duplicate_info = duplicate_info))
+  }
+
+  duplicated_rows <- source_pairs$recording_key %in% duplicate_keys
+  source_pairs$summary_md5 <- NA_character_
+  source_pairs$predictions_md5 <- NA_character_
+  source_pairs$summary_md5[duplicated_rows] <- unname(tools::md5sum(source_pairs$summary_csv[duplicated_rows]))
+  source_pairs$predictions_md5[duplicated_rows] <- unname(tools::md5sum(source_pairs$predictions_csv[duplicated_rows]))
+  source_pairs$duplicate_signature <- ifelse(
+    duplicated_rows,
+    paste(source_pairs$summary_md5, source_pairs$predictions_md5, sep = "::"),
+    NA_character_
+  )
+
+  conflicting_keys <- vapply(
+    duplicate_keys,
+    function(recording_key) {
+      signatures <- unique(source_pairs$duplicate_signature[source_pairs$recording_key == recording_key])
+      length(signatures[!is.na(signatures)]) > 1L
+    },
+    logical(1)
+  )
+
+  if (any(conflicting_keys)) {
+    conflicting_key_names <- duplicate_keys[conflicting_keys]
+    conflicting_rows <- source_pairs[source_pairs$recording_key %in% conflicting_key_names, , drop = FALSE]
+    conflicting_rows <- conflicting_rows[
+      order(conflicting_rows$recording_key, conflicting_rows$summary_csv),
+      c("recording_key", "summary_csv", "predictions_csv", "summary_md5", "predictions_md5"),
+      drop = FALSE
+    ]
+    conflict_preview <- utils::capture.output(print(utils::head(conflicting_rows, 20), row.names = FALSE))
+    stop(
+      paste(
+        c(
+          sprintf(
+            "cleanup found %d recording keys with multiple non-identical source file pairs; refusing to collapse them automatically",
+            length(conflicting_key_names)
+          ),
+          conflict_preview
+        ),
+        collapse = "\n"
+      )
+    )
+  }
+
+  source_pairs <- source_pairs[
+    order(source_pairs$recording_key, -source_pairs$modified_time, source_pairs$summary_csv),
+    ,
+    drop = FALSE
+  ]
+  source_pairs <- source_pairs[!duplicated(source_pairs$recording_key), , drop = FALSE]
+  duplicate_info$duplicate_rows_collapsed <- nrow(source_pairs) - length(unique(source_pairs$recording_key))
+  duplicate_info$duplicate_rows_collapsed <- sum(key_counts[key_counts > 1L] - 1L)
+
+  source_pairs$summary_md5 <- NULL
+  source_pairs$predictions_md5 <- NULL
+  source_pairs$duplicate_signature <- NULL
+
+  list(source_pairs = source_pairs, duplicate_info = duplicate_info)
+}
+
 build_amalgamation_manifest <- function(source_pairs, existing_manifest = NULL) {
   manifest <- data.frame(
     recorder_id = character(),
@@ -428,15 +505,12 @@ source_pairs <- data.frame(
   amalgamated_root = amalgamated_root,
   stringsAsFactors = FALSE
 )
-source_pairs <- source_pairs[
-  order(source_pairs$recording_key, -source_pairs$modified_time, source_pairs$summary_csv),
-  ,
-  drop = FALSE
-]
-source_pairs <- source_pairs[!duplicated(source_pairs$recording_key), , drop = FALSE]
 if (nzchar(cleanup_recorder_filter)) {
   source_pairs <- source_pairs[source_pairs$recorder_id == cleanup_recorder_filter, , drop = FALSE]
 }
+resolved_source_pairs <- collapse_duplicate_source_pairs(source_pairs)
+source_pairs <- resolved_source_pairs$source_pairs
+duplicate_source_info <- resolved_source_pairs$duplicate_info
 source_pairs <- source_pairs[order(source_pairs$recorder_id, source_pairs$recording_key), , drop = FALSE]
 
 if (nrow(source_pairs) == 0) {
@@ -496,6 +570,13 @@ if (nzchar(cleanup_recorder_filter)) {
   emit_console(sprintf("updated amalgamated recorder directory for %s under %s", cleanup_recorder_filter, amalgamated_root))
 } else {
   emit_console(sprintf("updated amalgamated recorder directories under %s", amalgamated_root))
+}
+if (duplicate_source_info$duplicate_rows_collapsed > 0) {
+  emit_console(sprintf(
+    "collapsed %d byte-identical duplicate source pairs across %d recording keys before amalgamation",
+    duplicate_source_info$duplicate_rows_collapsed,
+    duplicate_source_info$duplicate_keys
+  ))
 }
 emit_console(sprintf(
   "processed %d unique BirdNET output pairs across %d recorders (%d newly copied, %d existing retained)",
