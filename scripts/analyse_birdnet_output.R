@@ -3775,8 +3775,10 @@ build_monthly_diversity_long <- function(monthly_diversity_summary) {
 add_running_mean_to_time_series <- function(time_series_summary, bin_minutes, running_days = 7) {
   if (nrow(time_series_summary) == 0) {
     time_series_summary$identification_count_running_mean <- numeric()
+    time_series_summary$identification_count_smoothed_trend <- numeric()
     time_series_summary$identification_count_plot <- numeric()
     time_series_summary$identification_count_running_mean_plot <- numeric()
+    time_series_summary$identification_count_smoothed_trend_plot <- numeric()
     time_series_summary$zero_detection_point <- numeric()
     return(time_series_summary)
   }
@@ -3784,7 +3786,7 @@ add_running_mean_to_time_series <- function(time_series_summary, bin_minutes, ru
   window_bins <- max(1L, as.integer(round((running_days * 24 * 60) / bin_minutes)))
   counts <- as.numeric(time_series_summary$identification_count)
   data_available <- as.logical(time_series_summary$data_available)
-  running_mean <- rep(NA_real_, length(counts))
+  smoothed_trend <- rep(NA_real_, length(counts))
 
   available_indices <- which(data_available)
   if (length(available_indices) > 0) {
@@ -3792,21 +3794,46 @@ add_running_mean_to_time_series <- function(time_series_summary, bin_minutes, ru
     for (segment_index in seq_len(length(gap_breaks) - 1L)) {
       segment_positions <- available_indices[(gap_breaks[[segment_index]] + 1L):gap_breaks[[segment_index + 1L]]]
       segment_counts <- counts[segment_positions]
-      cumulative_counts <- c(0, cumsum(segment_counts))
-      segment_running_mean <- vapply(
+      positive_positions <- which(segment_counts > 0)
+
+      if (length(positive_positions) < max(3L, min(window_bins, 5L))) {
+        next
+      }
+
+      positive_counts <- segment_counts[positive_positions]
+      smoother_span <- min(1, max(0.2, window_bins / length(positive_positions)))
+      lowess_fit <- stats::lowess(
+        x = positive_positions,
+        y = log1p(positive_counts),
+        f = smoother_span,
+        iter = 1L
+      )
+      segment_smoothed <- stats::approx(
+        x = lowess_fit$x,
+        y = lowess_fit$y,
+        xout = seq_along(segment_counts),
+        method = "linear",
+        rule = 1L,
+        ties = mean
+      )$y
+
+      local_positive_support <- vapply(
         seq_along(segment_counts),
         function(index) {
           start_index <- max(1L, index - window_bins + 1L)
-          total_count <- cumulative_counts[index + 1L] - cumulative_counts[start_index]
-          total_count / (index - start_index + 1L)
+          end_index <- min(length(segment_counts), index + window_bins - 1L)
+          sum(segment_counts[start_index:end_index] > 0)
         },
-        numeric(1)
+        integer(1)
       )
-      running_mean[segment_positions] <- segment_running_mean
+
+      segment_smoothed[local_positive_support < max(3L, ceiling(window_bins / 4))] <- NA_real_
+      smoothed_trend[segment_positions] <- expm1(segment_smoothed)
     }
   }
 
-  time_series_summary$identification_count_running_mean <- running_mean
+  time_series_summary$identification_count_running_mean <- smoothed_trend
+  time_series_summary$identification_count_smoothed_trend <- smoothed_trend
   time_series_summary$identification_count_plot <- ifelse(
     time_series_summary$data_available & time_series_summary$identification_count > 0,
     time_series_summary$identification_count,
@@ -3815,6 +3842,11 @@ add_running_mean_to_time_series <- function(time_series_summary, bin_minutes, ru
   time_series_summary$identification_count_running_mean_plot <- ifelse(
     time_series_summary$data_available & time_series_summary$identification_count_running_mean > 0,
     time_series_summary$identification_count_running_mean,
+    NA_real_
+  )
+  time_series_summary$identification_count_smoothed_trend_plot <- ifelse(
+    time_series_summary$data_available & time_series_summary$identification_count_smoothed_trend > 0,
+    time_series_summary$identification_count_smoothed_trend,
     NA_real_
   )
   time_series_summary$zero_detection_point <- ifelse(
@@ -3905,8 +3937,10 @@ build_time_series_summary_for_subset <- function(detections_subset,
       identification_count = integer(),
       unique_species_count = integer(),
       identification_count_running_mean = numeric(),
+      identification_count_smoothed_trend = numeric(),
       identification_count_plot = numeric(),
       identification_count_running_mean_plot = numeric(),
+      identification_count_smoothed_trend_plot = numeric(),
       zero_detection_point = numeric(),
       stringsAsFactors = FALSE
     ))
@@ -6371,7 +6405,10 @@ plot_subtitle <- sprintf(
 )
 time_series_plot_subtitle <- paste0(
   plot_subtitle,
-  sprintf(" | red line = %.3g-day running mean | grey bands = no data", rolling_mean_window_days)
+  sprintf(
+    " | red line = %.3g-day robust smoother (positive detections only) | grey bands = no data",
+    rolling_mean_window_days
+  )
 )
 time_series_plot_linear_subtitle <- paste0(
   plot_subtitle,
@@ -6392,7 +6429,7 @@ periodicity_plot_subtitle <- paste0(
 )
 recorder_comparison_time_series <- time_series_by_recorder[
   ,
-  c("time_bin", "recorder_id", "identification_count_running_mean_plot"),
+  c("time_bin", "recorder_id", "identification_count_smoothed_trend_plot"),
   drop = FALSE
 ]
 recorder_comparison_time_series$recorder_id <- factor(
@@ -6457,7 +6494,7 @@ time_series_plot <- ggplot2::ggplot(
   ) +
   ggplot2::geom_col(fill = "steelblue", alpha = 0.5, width = bin_minutes * 60 * 0.9, na.rm = TRUE) +
   ggplot2::geom_line(
-    ggplot2::aes(y = identification_count_running_mean_plot),
+    ggplot2::aes(y = identification_count_smoothed_trend_plot),
     colour = "firebrick2",
     linewidth = 1.2,
     linetype = "dashed",
@@ -6524,7 +6561,7 @@ time_series_recorder_comparison_plot <- ggplot2::ggplot(
   recorder_comparison_time_series,
   ggplot2::aes(
     x = time_bin,
-    y = identification_count_running_mean_plot,
+    y = identification_count_smoothed_trend_plot,
     colour = recorder_id,
     linetype = recorder_id,
     linewidth = recorder_id,
@@ -6553,12 +6590,12 @@ time_series_recorder_comparison_plot <- ggplot2::ggplot(
   ggplot2::labs(
     title = "BirdNET identifications over time by recorder",
     subtitle = sprintf(
-      "comparison of %.3g-day running means | gaps indicate no data | minimum confidence: %.3f",
+      "comparison of %.3g-day robust smoothers | gaps indicate no data | minimum confidence: %.3f",
       rolling_mean_window_days,
       min_confidence
     ),
     x = "time bin",
-    y = "identifications per bin running mean"
+    y = "identifications per bin smoothed trend"
   ) +
   analysis_plot_theme() +
   ggplot2::theme(legend.position = "top")
@@ -6913,7 +6950,7 @@ time_series_by_recorder_plot <- ggplot2::ggplot(
   ) +
   ggplot2::geom_col(fill = "steelblue", alpha = 0.5, width = bin_minutes * 60 * 0.9, na.rm = TRUE) +
   ggplot2::geom_line(
-    ggplot2::aes(y = identification_count_running_mean_plot),
+    ggplot2::aes(y = identification_count_smoothed_trend_plot),
     colour = "firebrick2",
     linewidth = 1.2,
     linetype = "dashed",
@@ -7568,7 +7605,7 @@ for (recorder_id in recorder_ids) {
     ) +
     ggplot2::geom_col(fill = "black", width = bin_minutes * 60 * 0.9, na.rm = TRUE) +
     ggplot2::geom_line(
-      ggplot2::aes(y = identification_count_running_mean_plot),
+      ggplot2::aes(y = identification_count_smoothed_trend_plot),
       colour = "firebrick2",
       linewidth = 1.2,
       linetype = "dashed",
