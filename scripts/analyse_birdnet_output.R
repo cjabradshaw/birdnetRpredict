@@ -8,7 +8,7 @@ rolling_mean_window_days <- 14
 periodicity_max_lag_bins <- 48L
 
 ## minimum BirdNET ID confidence
-min_confidence <- 0.25
+min_confidence <- 0.5
 
 ## Atlas of Living Australia sanity check settings
 ala_auth_mode <- "ala"  # "ala" or "none"
@@ -6581,7 +6581,8 @@ time_series_recorder_comparison_plot <- ggplot2::ggplot(
   )
 ) +
   ggplot2::geom_line() +
-  ggplot2::scale_colour_manual(
+  ggplot2::scale_y_log10() +
+    ggplot2::scale_colour_manual(
     values = recorder_comparison_style$colours,
     breaks = recorder_ids,
     drop = FALSE,
