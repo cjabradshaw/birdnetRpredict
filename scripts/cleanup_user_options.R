@@ -1,6 +1,6 @@
 # user-defined clean-up settings ----------------------------------------------
 
-cleanup_amalgamated_recorder_name <- "GEL_A"  # e.g., "GEL_A"; leave blank to rebuild all recorder amalgamations
+cleanup_amalgamated_recorder_name <- "GEL_E"  # e.g., "GEL_A"; leave blank to rebuild all recorder amalgamations
 
 cleanup_verify_copied_files <- TRUE  # compare source/destination CSV pairs after copy to ensure intact amalgamated outputs
 

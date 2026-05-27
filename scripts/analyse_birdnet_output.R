@@ -8,7 +8,7 @@ rolling_mean_window_days <- 14
 periodicity_max_lag_bins <- 48L
 
 ## minimum BirdNET ID confidence
-min_confidence <- 0.25
+min_confidence <- 0.1
 
 ## Atlas of Living Australia sanity check settings
 ala_auth_mode <- "ala"  # "ala" or "none"
@@ -6391,6 +6391,7 @@ periodicity_plot_subtitle <- paste0(
   " | diagnostics use the longest contiguous available-data segment"
 )
 recorder_comparison_time_series <- time_series_by_recorder[
+  ,
   c("time_bin", "recorder_id", "identification_count_running_mean_plot"),
   drop = FALSE
 ]
