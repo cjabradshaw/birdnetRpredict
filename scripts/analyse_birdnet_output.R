@@ -8,7 +8,7 @@ rolling_mean_window_days <- 14
 periodicity_max_lag_bins <- 48L
 
 ## minimum BirdNET ID confidence
-min_confidence <- 0.1
+min_confidence <- 0.25
 
 ## Atlas of Living Australia sanity check settings
 ala_auth_mode <- "ala"  # "ala" or "none"
@@ -2312,10 +2312,22 @@ extract_recording_start_time_from_path <- function(path_text, timezone) {
   )
 
   if (length(timestamp_text) == 1 && !is.na(timestamp_text) && nzchar(timestamp_text)) {
-    return(as.POSIXct(timestamp_text, format = "%Y%m%dT%H%M%S%z", tz = timezone))
+    wall_clock_text <- sub("[+-][0-9]{4}$", "", timestamp_text)
+    return(as.POSIXct(wall_clock_text, format = "%Y%m%dT%H%M%S", tz = timezone))
   }
 
   na_posixct(timezone)
+}
+
+analysis_recording_dedup_key <- function(path_text) {
+  recorder_label <- extract_recorder_label_from_path(path_text, fallback = "")
+  recording_clock_key <- extract_recording_clock_key(path_text, fallback = "")
+
+  if (nzchar(recorder_label) && nzchar(recording_clock_key)) {
+    return(sprintf("%s/%s", recorder_label, recording_clock_key))
+  }
+
+  canonical_recording_key(path_text)
 }
 
 build_summary_file_metadata <- function(summary_csv_files, timezone) {
@@ -5201,7 +5213,7 @@ summary_csv_files <- summary_csv_files[!grepl("/analysis/", summary_csv_files)]
 if (length(summary_csv_files) > 1) {
   summary_file_index <- data.frame(
     summary_csv = summary_csv_files,
-    recording_key = vapply(summary_csv_files, canonical_recording_key, character(1)),
+    recording_key = vapply(summary_csv_files, analysis_recording_dedup_key, character(1)),
     is_amalgamated = grepl("/amalgamated_birdnet_output/", summary_csv_files, fixed = TRUE),
     modified_time = as.numeric(file.info(summary_csv_files)$mtime),
     stringsAsFactors = FALSE

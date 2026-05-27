@@ -124,10 +124,11 @@ Archive mode still avoids unpacking the entire archive at once and avoids waitin
 
 1. searches recursively under `out/` for existing `*_birdnet_species_summary.csv` files
 2. ignores `out/analysis/` and, when the same recording exists in multiple places, prefers `out/amalgamated_birdnet_output/` over the original recorder/source directories
-3. combines the summary CSVs that are already present and readable
-4. filters detections by a user-defined minimum confidence threshold
-5. bins detections into a user-defined time step (default `60` minutes)
-6. writes aggregate CSV tables plus plots for:
+3. deduplicates recorder inputs by recorder label plus local wall-clock timestamp so legacy filename stems that carry the wrong UTC offset do not create artificial gaps or duplicate bins in the time-series plots
+4. combines the summary CSVs that are already present and readable
+5. filters detections by a user-defined minimum confidence threshold
+6. bins detections into a user-defined time step (default `60` minutes)
+7. writes aggregate CSV tables plus plots for:
     - identifications over time
     - cumulative new species over time
     - identifications per species
@@ -138,6 +139,7 @@ This script is intended to work while archive processing is still incomplete. Yo
 ## Determining coordinates and date
 
 The pipeline first tries to parse metadata from the audio file name.
+For analysis, the recorder timestamp stem is interpreted as the local wall-clock recording time in `analysis_timezone`, rather than trusting the embedded UTC offset literally, so legacy filenames with an outdated Adelaide offset still land in the correct time bin.
 
 For a name like:
 
